@@ -81,8 +81,8 @@ OutputKmer= namedtuple('OutputKmer', ['kmer','id','segment_expr','is_cross_junct
 
 """
 Peptide namedtuple
-- mut: peptide translated from mutated dna string
-- ref: peptide translated from original dna string
+- mut: peptide translated from mutated dna string (list)
+- ref: peptide translated from original dna string (list)
 """
 Peptide = namedtuple('Peptide', ['mut', 'ref'])
 
@@ -90,7 +90,7 @@ Peptide = namedtuple('Peptide', ['mut', 'ref'])
 """
 Flag namedtuple
 - has_stop: Boolean variable that indicating if there is stop codon in the junction pair.
-- is_isolated: Boolean variable indicatimng if the output peptide is actually translated from a single exon instead of two.
+- is_isolated: Boolean variable indicating if the output peptide is actually translated from a single exon instead of two.
 """
 Flag = namedtuple('Flag', ['has_stop', 'is_isolated'])
 

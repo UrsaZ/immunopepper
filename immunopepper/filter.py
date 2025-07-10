@@ -98,27 +98,27 @@ def junctions_annotated(gene: Gene, gene_to_transcript_table: dict[str: list[str
         'ENSMUSG00000025902.13' -> ['ENSMUST00000027035.9', 'ENSMUST00000195555.1']
     :param transcript_to_cds_table: maps a transcript to a list of coding DNA sequencing (cds), e.g.
         'ENSMUST00000027035.9' -> [(4491718, 4492668, 2), (4493099, 4493406, 0)]
-    :return set of all the junctions pairs of a gene
+    :return set of all the junctions pairs of a gene -> {"exon1_end:exon2_start"}, e.g. {'4492668:4493099'}
     """
     gene_annot_jx = set()
 
     if gene.name not in gene_to_transcript_table:
         return gene_annot_jx
 
-    ts_list = gene_to_transcript_table[gene.name]
-    for ts in ts_list:
+    ts_list = gene_to_transcript_table[gene.name] # get transcripts for the gene
+    for ts in ts_list: # iterate over transcripts
         if ts not in transcript_to_cds_table:
             continue
 
-        curr_ts = transcript_to_cds_table[ts]
+        curr_ts = transcript_to_cds_table[ts] # get the cds for the transcript
         if len(curr_ts) < 2:
             continue
-        curr_ts = np.array(curr_ts)[:, [0, 1]]
+        curr_ts = np.array(curr_ts)[:, [0, 1]] # take only start and stop coordinates of the cds
         # collect junctions coordinates for the current transcript 
         gene_annot_jx.update([':'.join(x) for x in
                                 curr_ts.ravel()[1:-1].reshape(curr_ts.shape[0] - 1, 2).astype('str')])
 
-    return gene_annot_jx
+    return gene_annot_jx 
 
 
 def junction_tuple_is_annotated(junction_flag: np.ndarray, vertex_ids: list[int]):

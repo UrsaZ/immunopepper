@@ -1,6 +1,23 @@
 # Python libraries
 """"""
-# Core operation of ImmunoPepper. Traverse splicegraph and get kmer/peptide output
+# Core operation of ImmunoPepper. Traverse splicegraph and get kmer/peptide output.
+# Inputs:
+#   - Splicegraph: a pickle file containing the splicegraph data
+#   - Annotation: a gtf file containing the gene annotation
+#   - Mutations: germline and somatic mutations in a pickle file
+#   - Count data: a hdf5 file containing the gene expression counts (optional)
+#   - Junctions: a hdf5 file containing the junction metadata (optional)
+#   - Uniprot: a fasta file containing the k-mer database (optional)
+# Outputs:
+#   - Foreground k-mers/peptides: a set of k-mers/peptides generated from the splicegraph
+#   - Background k-mers/peptides: a set of k-mers/peptides generated from the annotation
+#   - Gene expression distribution: a tsv file containing the gene expression distribution
+#   - Library size: a tsv file containing the library size for each sample
+#   - Junction metadata: a hdf5 file containing the junction metadata
+#   - Junction peptides: a fasta file containing the junction peptides (optional)
+
+#   Foreground: novel peptides/k-mers from the splicegraph
+#   Background: reference peptides/k-mers from the annotation (for filtering or comparison)
 
 import h5py
 import logging
@@ -52,6 +69,9 @@ sys.modules['modules.classes.segmentgraph'] = csegmentgraph
 
 
 def pool_initializer_glob(countinfo_glob, genetable_glob, kmer_database_glob):  # Moved from utils because of global variables
+    """
+    Initialize global variables for the multiprocessing pool.
+    """
     global countinfo
     global genetable
     global kmer_database
@@ -61,44 +81,60 @@ def pool_initializer_glob(countinfo_glob, genetable_glob, kmer_database_glob):  
 
 
 def mapper_funct(tuple_arg):
+    """
+    Simple wrapper for unpacking arguments for the foreground gene batch processor inside multiprocessing.
+    """
     process_gene_batch_foreground(*tuple_arg)
 
 
 def mapper_funct_back(tuple_arg):
+    """
+    Simple wrapper for unpacking arguments for the background gene batch processor inside multiprocessing.
+    """
     process_gene_batch_background(*tuple_arg)
 
 
 def process_gene_batch_background(output_sample, mutation_sample, genes, gene_idxs, n_genes, mutation,
                                   genetable, arg, outbase, filepointer, verbose=False):
+    """
+    For each gene, generate reference k-mers/peptides by traversing its normal splice graph.
+    """
+
+    # Assign batch name from output folder name or "all" if single-threaded
     if arg.parallel > 1:
         batch_name = int(outbase.split('/')[-1].split('_')[-1])
     else:
         batch_name = 'all'
 
+    # Avoid reprocessing: process the genes only if parallel mode is not used or the batch does not exist
     if (arg.parallel == 1) or (not os.path.exists(os.path.join(outbase, "Annot_IS_SUCCESS"))):
-        pathlib.Path(outbase).mkdir(exist_ok=True, parents=True)
+        pathlib.Path(outbase).mkdir(exist_ok=True, parents=True) # Create output directory if it does not exist
+        # Initialize sets for background peptides and kmers, and lists for time and memory measurements
         set_pept_backgrd = set()
         set_kmer_backgrd = set()
         time_per_gene = []
         mem_per_gene = []
         all_gene_idxs = []
 
+        # Loop over genes in batch
         for i, gene in enumerate(genes):
             # measure time
             start_time = timeit.default_timer()
 
-            # Genes not contained in the annotation...
+            # Skip genes not contained in the annotation...
             if (gene.name not in genetable.gene_to_cds_begin or
                     gene.name not in genetable.gene_to_ts):
                 continue
 
-            all_gene_idxs.append(gene_idxs[i])
+            all_gene_idxs.append(gene_idxs[i]) # Store gene index
 
-            chrm = gene.chr.strip()
-            sub_mutation = get_sub_mutations(mutation, mutation_sample, chrm)
+            chrm = gene.chr.strip() # Get chromosome name
+            sub_mutation = get_sub_mutations(mutation, mutation_sample, chrm) # Get sub-mutations for the chromosome
+            # Collect the gene's background reference sequence with applied mutations.
             ref_mut_seq = collect_background_transcripts(gene=gene, ref_seq_file=arg.ref_path,
                                                          chrm=chrm, mutation=sub_mutation)
 
+            # Generate and save background peptides and kmers for this gene to the sets
             get_and_write_background_peptide_and_kmer(peptide_set=set_pept_backgrd,
                                                       kmer_set=set_kmer_backgrd,
                                                       gene=gene,
@@ -111,12 +147,13 @@ def process_gene_batch_background(output_sample, mutation_sample, genes, gene_id
             time_per_gene.append(timeit.default_timer() - start_time)
             mem_per_gene.append(print_memory_diags(disable_print=True))
 
+        # Save the background sets to disk, clear the sets after saving
         save_bg_peptide_set(set_pept_backgrd, filepointer, outbase, verbose)
         set_pept_backgrd.clear()
         save_bg_kmer_set(set_kmer_backgrd, filepointer, outbase, verbose)
         set_kmer_backgrd.clear()
 
-        pathlib.Path(os.path.join(outbase, "Annot_IS_SUCCESS")).touch()
+        pathlib.Path(os.path.join(outbase, "Annot_IS_SUCCESS")).touch() # Create a file to indicate successful processing
 
         if time_per_gene:
             logging_string = (f'....{output_sample}: annotation graph from batch {batch_name}/{n_genes} '
@@ -142,45 +179,52 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
                                   genes_info, gene_idxs, n_genes, genes_interest, disable_process_libsize,
                                   all_read_frames, complexity_cap, mutation, junction_dict,
                                   arg, outbase, filepointer, verbose):
+    """
+    For each gene, generate k-mers/peptides by traversing its splice graph.
+    Apply sample-specific mutations, expression data, junctions.
+    """
     global countinfo
     global genetable
     global kmer_database
     mut_count_id = None
+
+    # Assign batch name from output folder name or "all" if single-threaded
     if arg.parallel > 1:
         batch_name = int(outbase.split('/')[-1].split('_')[-1])
     else:
         batch_name = 'all'
 
+    # Avoid reprocessing: process the genes only if parallel mode is not used or the batch does not exist
     if (arg.parallel == 1) or (not os.path.exists(os.path.join(outbase, "output_sample_IS_SUCCESS"))):
-        pathlib.Path(outbase).mkdir(exist_ok=True, parents=True)
+        pathlib.Path(outbase).mkdir(exist_ok=True, parents=True) # Create output directory if it does not exist
+        # Initialize sets for foreground peptides and kmers, and lists for time and memory measurements
         set_pept_forgrd = set()
         time_per_gene = []
         mem_per_gene = []
         all_gene_idxs = []
         gene_expr = []
 
+        # Loop over genes in batch
         for i, gene in enumerate(genes):
-            # measure time
-            start_time = timeit.default_timer()
+            start_time = timeit.default_timer() # measure time
 
-            # Genes not contained in the annotation in annotated CDS mode
+            # Skip genes not contained in the annotation in annotated CDS mode
             if (gene.name not in genetable.gene_to_cds_begin or
                     gene.name not in genetable.gene_to_ts):
                 continue
 
-            idx = get_idx(countinfo, output_sample, gene_idxs[i])
+            idx = get_idx(countinfo, output_sample, gene_idxs[i]) # Get index of the gene in the countinfo
             # Gene counts information
             # Gene of interest always compute expression, others compute expession if required for library
             if not disable_process_libsize or (gene.name in genes_interest):
                 if countinfo:
-                    gidx = countinfo.gene_idx_dict[gene.name]
+                    gidx = countinfo.gene_idx_dict[gene.name] # Get gene index in the countinfo
 
                     with h5py.File(countinfo.h5fname, 'r') as h5f:
-                        # Get edge counts
                         if not (gidx in countinfo.gene_id_to_edgerange and gidx in countinfo.gene_id_to_segrange):
                             edge_idxs = None
                             edge_counts = None
-                        else:
+                        else: # Extract edge indices and counts if available.
                             edge_gene_idxs = list(np.arange(countinfo.gene_id_to_edgerange[gidx][0],
                                                             countinfo.gene_id_to_edgerange[gidx][1]))
                             edge_idxs = h5f['edge_idx'][edge_gene_idxs].astype('int')
@@ -190,20 +234,22 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
                         seg_gene_idxs = np.arange(countinfo.gene_id_to_segrange[gidx][0],
                                                   countinfo.gene_id_to_segrange[gidx][1])
                         seg_counts = h5f['segments'][seg_gene_idxs, :]
-                        if output_samples_ids is not None:
+                        if output_samples_ids is not None:  # If output_samples_ids is provided, filter segment counts
                             seg_counts = seg_counts[:, output_samples_ids]  # limitation fancy hdf5 indexing
                         else:
-                            output_samples_ids = np.arange(seg_counts.shape[1])
-                else:
+                            output_samples_ids = np.arange(seg_counts.shape[1]) 
+                else: # If countinfo is not available, set edge and segment counts to None
                     edge_idxs = None
                     edge_counts = None
                     seg_counts = None
 
             # library size calculated only for genes with CDS --> already checked in if-statement above
             if countinfo and not disable_process_libsize:
+                # Get total gene expression for the gene as:
+                # total_expr = reads_length*total_reads_counts
                 gene_expr.append([gene.name] + get_total_gene_expr(gene, countinfo, seg_counts))
 
-            # Process only gene quantification and library sizes
+            # Process only gene quantification and library sizes, skip further processing
             if arg.libsize_extract:
                 time_per_gene.append(timeit.default_timer() - start_time)
                 mem_per_gene.append(print_memory_diags(disable_print=True))
@@ -219,20 +265,25 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
                 continue
 
             chrm = gene.chr.strip()
+            # Get germline and somatic mutations for the given sample and chromosome
             sub_mutation = get_sub_mutations(mutation, mutation_sample, chrm)
             if arg.mutation_sample is not None:
                 mut_count_id = [idx for idx, sample in enumerate(arg.output_samples)
                                 if arg.mutation_sample.replace('-', '').replace('_', '').replace('.', '').replace('/', '') == sample]
+            # Extract relevant junction data if provided
             junction_list = None
             if junction_dict is not None and chrm in junction_dict:
                 junction_list = junction_dict[chrm]
 
+            # Prepare output directories 
             pathlib.Path(get_save_path(filepointer.kmer_segm_expr_fp, outbase)).mkdir(exist_ok=True, parents=True)
             pathlib.Path(get_save_path(filepointer.kmer_edge_expr_fp, outbase)).mkdir(exist_ok=True, parents=True)
             pathlib.Path(get_save_path(filepointer.junction_meta_fp, outbase)).mkdir(exist_ok=True, parents=True)
             if arg.output_fasta:
                 pathlib.Path(get_save_path(filepointer.junction_peptide_fp, outbase)).mkdir(exist_ok=True, parents=True)
 
+            # Traverse the splice graph for the gene to collect valid vertex pairs and sequences
+            # considering mutations and frames.
             vertex_pairs, \
             ref_mut_seq, \
             exon_som_dict = collect_vertex_pairs(gene=gene,
@@ -245,7 +296,8 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
                                                  disable_concat=arg.disable_concat,
                                                  kmer_length=arg.kmer,
                                                  filter_redundant=arg.filter_redundant)
-
+            # Main function to generate peptides and kmers from vertex pairs and write results,
+            # including accounting for mutations, expression counts, and outputs.
             get_and_write_peptide_and_kmer(peptide_set=set_pept_forgrd,
                                            gene=gene,
                                            all_vertex_pairs=vertex_pairs,
@@ -275,9 +327,10 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
             mem_per_gene.append(print_memory_diags(disable_print=True))
             all_gene_idxs.append(gene_idxs[i])
 
+        # Save gene expression data to a file
         save_gene_expr_distr(gene_expr, arg.output_samples, output_sample,  filepointer, outbase, verbose)
 
-        pathlib.Path(os.path.join(outbase, "output_sample_IS_SUCCESS")).touch()
+        pathlib.Path(os.path.join(outbase, "output_sample_IS_SUCCESS")).touch() # Create a file to indicate successful processing
 
         if time_per_gene:
             logging_string = (f'....{output_sample}: output_sample graph from batch {batch_name}/{n_genes} processed, '
@@ -298,7 +351,7 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
     return 'multiprocessing is success'
 
 
-def mode_build(arg):
+def mode_build(arg): # main, handles setup, loading, and dispatc
     global output_sample
     global filepointer
     global countinfo  # Will be used in non parallel mode
@@ -309,6 +362,11 @@ def mode_build(arg):
     logging.info(">>>>>>>>> Build: Start Preprocessing")
     logging.info('Building lookup structure ...')
     start_time = timeit.default_timer()
+
+    # extract info from the annotation file:
+    #   - gene table: stores the gene-transcript-cds mapping tables 
+    #     ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_cds']
+    #   - chromosome set: stores chromosome names
     genetable, chromosome_set = preprocess_ann(arg.ann_path)
     end_time = timeit.default_timer()
     logging.info('\tTime spent: {:.3f} seconds'.format(end_time - start_time))
@@ -349,7 +407,7 @@ def mode_build(arg):
     if arg.start_id != 0 and arg.start_id < len(graph_data):
         logging.info(f'development feature: starting at gene number {arg.start_id}')
         graph_data = graph_data[arg.start_id:]
-
+    # Verify chromosome naming consistency between annotation, mutations, and splice graphs.
     check_chr_consistence(chromosome_set, mutation, graph_data)
 
     # read the intron of interest file gtex_junctions.hdf5
@@ -369,7 +427,7 @@ def mode_build(arg):
     print_memory_diags()
     logging.info(">>>>>>>>> Finish Preprocessing")
 
-    # parse user choice for genes
+    # parse user choice for genes (filter)
     graph_data, genes_interest, n_genes, \
     complexity_cap, disable_process_libsize = parse_gene_choices(arg.genes_interest, arg.process_chr, arg.process_num,
                                                                  arg.complexity_cap, arg.disable_process_libsize,
@@ -380,10 +438,11 @@ def mode_build(arg):
                                                                               matching_count_samples)
 
     logging.info(">>>>>>>>> Start traversing splice graph")
+    # Loop over output samples
     for output_sample in process_output_samples:
         logging.info(f'>>>> Processing output_sample {output_sample}, there are {n_genes} graphs in total')
 
-        # prepare the output files
+        # Determine output directory name for each sample.
         if output_sample != arg.mutation_sample:
             output_path = os.path.join(arg.output_dir, f'{output_sample}_mut{arg.mutation_sample}')
         else:
@@ -398,6 +457,8 @@ def mode_build(arg):
         # go over each gene in splicegraph
         genes_range = list(range(0, n_genes))
 
+        # Split genes into batches for multiprocessing.
+        # Run background and foreground processing in parallel if requested.
         if arg.parallel > 1:
             logging.info(f'Parallel: {arg.parallel} Threads')
             batch_size = min(n_genes, arg.batch_size)

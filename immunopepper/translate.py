@@ -94,7 +94,7 @@ def cross_peptide_result(read_frame, strand, variant_comb, somatic_mutation_sub_
     peptide: NamedTuple Peptide. has attribute ['ref', 'mut']. contain the output peptide
         translated from reference sequence and mutated sequence.
     coord: NamedTuple Coord. has attribute ['start_v1', 'stop_v1', 'start_v2', 'stop_v2']
-        contains the true four position of exon pairs (after considering read framee)
+        contains the true four position of exon pairs (after considering read frame)
         that outputs the peptide.
     flag: NamedTuple Flag. has attribute ['has_stop', 'is_isolated']
     next_start_v1: int. start vertex in new reading frame
@@ -172,7 +172,7 @@ def isolated_peptide_result(read_frame, strand, variant_comb, somatic_mutation_s
     peptide: NamedTuple. has attribute ['ref', 'mut']. contain the output peptide
         translated from reference sequence and mutated sequence.
     coord: NamedTuple. has attribute ['start_v1', 'stop_v1', 'start_v2', 'stop_v2']
-        contains the true two position of exon pairs (after considering read framee)
+        contains the true two position of exon pairs (after considering read frame)
         that outputs the peptide. 'start_v2', 'stop_v2' is set to be np.nan.
     flag: NamedTuple. has attribute ['has_stop', 'is_isolated']
 
@@ -232,7 +232,7 @@ def get_peptide_result(simple_meta_data, strand, variant_comb, somatic_mutation_
         is_isolated = True
     else:
         is_isolated = False
-    peptide = Peptide(peptide_mut, peptide_ref)
+    peptide = Peptide(peptide_mut, peptide_ref) 
     flag = Flag(mut_has_stop_codon, is_isolated)
     return peptide,flag
 

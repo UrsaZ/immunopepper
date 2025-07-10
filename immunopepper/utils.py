@@ -47,6 +47,7 @@ def get_successor_list(adj_matrix, vertex_map, read_strand):
     for idx in range(adj_matrix.shape[0]):
         succ_list.append([])
         for jdx in range(adj_matrix.shape[0]):
+            # if there idx and jdx are connected and the read strand is correct
             if adj_matrix[idx, jdx] == 1 and \
                ((read_strand == "+" and vertex_map[0][idx] <= vertex_map[0][jdx]) or
                (read_strand == "-" and vertex_map[1][idx] >= vertex_map[1][jdx])):
