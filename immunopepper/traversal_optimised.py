@@ -28,6 +28,7 @@ class SegmentPathTrie:
                 return False
         return True
 
+
 def build_segment_trie(gene) -> SegmentPathTrie:
     """
     Build a trie of valid segment paths from actual transcripts.
@@ -79,7 +80,7 @@ def extract_kmers_from_graph(gene,
 
     Parameters:
         gene: Gene object with .segmentgraph and .splicegraph
-        segment_sequences: dict mapping segment_id -> DNA sequence (str)    #TODO: no need for sequences if I apply cds stops instead of stop codons
+        segment_sequences: dict mapping segment_id -> DNA sequence (str)    #TODO: decide if I will use this at all
         cds_start_coords: list of tuples (segment_id, offset) marking CDS starts #TODO: find out how cds are encoded
         k: k-mer size (default 27)
         step: propagation step in nt (default 3)
@@ -102,40 +103,28 @@ def extract_kmers_from_graph(gene,
     for seg_id, offset in cds_start_coords:
         init_paths = build_initial_kmers(seg_id, offset, k, segment_sequences, gene.segmentgraph.seg_edges, trie)
         for path in init_paths:
-            queue.append((path, [seg_id])) #TODO: ensure initial path is non-redundant!
+            queue.append(path)
             unique_kmers.add(tuple(path))
 
     # Propagate k-mers (active paths) through the segment graph
     # the graph is traversed 5'--> 3', not transcript by transcript.
     while queue: # While there are k-mers to propagate
-        current_path, seg_path = queue.popleft() # Remove and return a k-mer from the left side
+        current_path = queue.popleft() # Remove and return a k-mer from the left side
         
         # Try to advance by 3 nt (--> 1 aa)
         # new_paths is a list of lists of tuples (segment_id, start, end)
         new_paths = propagate_kmer(current_path, step, segment_sequences, gene.segmentgraph.seg_edges, gene.segmentgraph.segments, trie)
 
+        # iterate over all possible propagated paths
         for new_path in new_paths:
-            # If the segment ID at the end of the new path is different from the last segment ID in the current path, then append it to the path
-            new_seg_path = seg_path + [new_path[-1][0]] if new_path[-1][0] != seg_path[-1] else seg_path
-            if not contains_stop_codon(new_path, segment_sequences):
+            if not contains_stop_codon(new_path, segment_sequences): # Check for stop codon in the new last 3 nt, terminate path if found
                 path_tuple = tuple(new_path)
+
+                # this will be true for alternative starts, which all lead to the same segment
+                # this segment needs to be propagated only once, so we do not append it to queue again
                 if path_tuple not in unique_kmers:
                     unique_kmers.add(path_tuple)
-                    queue.append((new_path, new_seg_path))
-
-        if new_path is not None: # if the path did not end
-            new_seg_path = seg_path + [new_path[-1][0]] if new_path[-1][0] != seg_path[-1] else seg_path #?
-            
-            # check if the new segment combination exists in any transcript
-            if trie.is_valid_path(new_seg_path):
-                if not contains_stop_codon(new_path, segment_sequences): # terminate if stop codon is found
-                    path_tuple = tuple(new_path) 
-
-                    # will be true for alternative starts, which all lead to the same segment
-                    # this segment needs to be propagated only once, so we do not append it to queue again
-                    if path_tuple not in unique_kmers:
-                        unique_kmers.add(path_tuple)
-                        queue.append((new_path, new_seg_path))
+                    queue.append(new_path)
 
     return unique_kmers
 
@@ -144,30 +133,74 @@ def build_initial_kmers(seg_id: int,
                         k: int,
                         segment_sequences: Dict[int, str],
                         seg_edges: np.ndarray,
+                        segments: np.ndarray,
                         trie: SegmentPathTrie) -> List[List[Tuple[int, int, int]]]:
-    results = []
+    """
+    Build all valid initial k-mer paths starting from (seg_id, offset), exploring
+    all splice paths until k nucleotides are collected.
 
-    def dfs(current_id: int, current_offset: int, remaining: int,
-            path: List[Tuple[int, int, int]], seg_path: List[int]):
+    Args:
+        seg_id: Starting segment ID.
+        offset: Starting offset in the segment sequence (relative, 0-based). #TODO: check if this is 0-based
+        k: Total number of nucleotides to collect (k-mer size).
+        segment_sequences: Segment ID -> sequence string.
+        seg_edges: Segment adjacency matrix (spladder gene.segmentgraph.seg_edges).
+        segments: 2xN with [start, end] for each segment based on the strand (spladder gene.segmentgraph.segments) #TODO: test with both strands
+        trie: A SegmentPathTrie object that validates segment paths.
+
+    Returns:
+        List of kmer paths, each path is a list of (segment_id, start, end) tuples
+    """
+    results = [] # Store all valid initial k-mers
+    seen = set() # To avoid processing k-mers redundantly
+
+    def dfs(current_id: int, 
+            current_offset: int, 
+            remaining: int,
+            path: List[Tuple[int, int, int]], 
+            seg_path: List[int]):
+        """ Recursive depth-first search to explore all valid k-mer paths.
+        Args:
+            current_id: Current segment ID.
+            current_offset: Current offset in the segment sequence.
+            remaining: Remaining nucleotides to collect.
+            path: Current k-mer path as a list of (segment_id, start, end) tuples.
+            seg_path: Current segment path as a list of segment IDs.
+
+        Side Effects:
+            Appends valid k-mer paths to `results` when exactly k nucleotides are collected
+        """
         seq = segment_sequences.get(current_id, "")
         if current_offset >= len(seq):
-            return
+            return # Invalid offset — past end of sequence
 
-        available = len(seq) - current_offset
-        take = min(available, remaining)
-        new_path = path + [(current_id, current_offset, current_offset + take)]
-        new_seg_path = seg_path + [current_id] if not seg_path or seg_path[-1] != current_id else seg_path
+        available = len(seq) - current_offset # How many nucleotides are available in the current segment from translation start
+        take = min(available, remaining) # take k==27, otherwise the whole segment length
+
+        # get genomic coordinates of the k-mer in the current segment
+        segment_start = segments[0, current_id] # get segment start coordinates from the matrix #TODO: change this if cds starts are absolute!!! check for negative strand
+        cds_start = segment_start + current_offset # shift by the cds offset
+        segment_end = cds_start + take # get k-mer end position
+
+        new_path = path + [(current_id, cds_start, segment_end)] # path will be empty at the start
         remaining -= take
 
         if remaining == 0:
-            results.append(new_path)
+            path_tuple = tuple(new_path)
+            if path_tuple not in seen: # faster than checking if the path is in results
+                results.append(new_path)
+                seen.add(path_tuple)
             return
+        
+        # if kmer is not complete, we need to propagate into next segments
+        next_segments = np.where(seg_edges[current_id])[0]
+        # Iterate over all possible next segments
+        for next_id in next_segments:
+            next_seg_path = seg_path + [next_id] # add next segment to the path (a list of segment IDs)
+            if trie.is_valid_path(next_seg_path): # Check if this path exists in any transcript
+                dfs(next_id, 0, remaining, new_path, next_seg_path) # if yes, propagate to the next segment
 
-        for next_id in np.where(seg_edges[current_id])[0]:
-            if trie.is_valid_path(new_seg_path + [next_id]):
-                dfs(next_id, 0, remaining, new_path, new_seg_path)
-
-    dfs(seg_id, offset, k, [], [])
+    dfs(seg_id, offset, k, [], [seg_id]) # start with empty path and segment path
     return results
 
 def propagate_kmer(path: List[Tuple[int, int, int]],
@@ -273,7 +306,7 @@ def propagate_kmer(path: List[Tuple[int, int, int]],
 
     return all_paths
 
-
+#TODO: optimise in the end, no need to check the whole path after every propagation
 def contains_stop_codon(path: List[Tuple[int, int, int]],
                         segment_sequences: Dict[int, str]) -> bool:
     seq = ""
