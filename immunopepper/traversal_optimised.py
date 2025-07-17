@@ -27,6 +27,24 @@ class SegmentPathTrie:
             else:
                 return False
         return True
+    
+    def get_all_paths(self) -> List[List[int]]:
+        def dfs(node, path, paths):
+            for key, child in node.items():
+                if key == '__END__':
+                    paths.append(path[:])
+                else:
+                    path.append(key)
+                    dfs(child, path, paths)
+                    path.pop()
+        all_paths = []
+        dfs(self.root, [], all_paths)
+        return all_paths
+
+    def __str__(self):
+        paths = self.get_all_paths()
+        return '\n'.join(f"Path {i+1}: {path}" for i, path in enumerate(paths))
+
 
 
 def build_segment_trie(gene) -> SegmentPathTrie:
@@ -43,8 +61,8 @@ def build_segment_trie(gene) -> SegmentPathTrie:
     """
 
     seg_match = gene.segmentgraph.seg_match  # shape: (n_exons, n_segments)
-    # gene.splicegraph.vertices: 2xN array where each column represents an exon: [start, end] based on the strand
-    vertices_list = gene.splicegraph.vertices.T.tolist()  # transpose to [start, end] rows
+    # gene.splicegraph.vertices: 2xN array (N exons) where each column represents an exon: [start, end] based on the strand
+    vertices_list = gene.splicegraph.vertices.T.tolist()  # transpose to [start, end] rows (list of lists)
 
     exon_to_segments = {
         exon_id: set(np.where(seg_match[exon_id])[0])
@@ -53,9 +71,9 @@ def build_segment_trie(gene) -> SegmentPathTrie:
 
     trie = SegmentPathTrie()
 
-    for transcript_idx in gene.transcripts: # get exons for each transcript
+    for transcript_idx in range(len(gene.transcripts)): # get exons for each transcript
         segment_path = []
-        exon_coords = gene.exons[transcript_idx]  # List of (start, end) tuples as ndarray
+        exon_coords = gene.exons[transcript_idx]  #FIXME: gene.exons contains annotated exons, not actual ones in the data
 
         for exon_start, exon_end in exon_coords: # get exon id from exon coordinates
             try:
