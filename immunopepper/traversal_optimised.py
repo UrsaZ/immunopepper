@@ -20,6 +20,9 @@ class SegmentPathTrie:
         node['__END__'] = True
 
     def is_valid_path(self, path: List[int]) -> bool:
+        """
+        Return True for a segment id path that matches a full path in the trie. 
+        """
         node = self.root
         for seg_id in path:
             if seg_id in node:
@@ -49,44 +52,69 @@ class SegmentPathTrie:
 
 def build_segment_trie(gene) -> SegmentPathTrie:
     """
-    Build a trie of valid segment paths from actual transcripts.
-    Each transcript is represented by a sequence of exons,
-    and each exon is mapped to its corresponding segment IDs.
+    Build a trie of valid segment paths by traversing the splicegraph.
+    Segment paths are derived from exon connectivity and segment-exon matches.
+    If the strand is '-', the path is reversed at the end.
 
     Args:
-        gene: An object containing the splicegraph and segmentgraph of a gene.
+        gene: An object containing the strand, splicegraph and segmentgraph of a gene.
 
     Returns:
-        SegmentPathTrie: A trie containing all valid segment paths derived from transcripts.
+        SegmentPathTrie: A trie containing all valid segment paths derived from splicegraph paths.
     """
-
-    seg_match = gene.segmentgraph.seg_match  # shape: (n_exons, n_segments)
-    # gene.splicegraph.vertices: 2xN array (N exons) where each column represents an exon: [start, end] based on the strand
-    vertices_list = gene.splicegraph.vertices.T.tolist()  # transpose to [start, end] rows (list of lists)
-
-    exon_to_segments = {
-        exon_id: set(np.where(seg_match[exon_id])[0])
-        for exon_id in range(seg_match.shape[0])
-    } # Map exon IDs to their corresponding segment IDs
-
     trie = SegmentPathTrie()
+    seg_match = gene.segmentgraph.seg_match # 2D boolean matrix (exons x segments) 
+    splice_edges = gene.splicegraph.edges # 2D boolean adjacency matrix (exons x exons)
+    exon_coords = gene.splicegraph.vertices.T  # (N, 2) → [start, end] per exon
+    # a dict mapping each exon ID to the list of segment IDs it contains
+    exon_to_segments = {
+        exon_id: list(np.where(seg_match[exon_id])[0])
+        for exon_id in range(seg_match.shape[0])
+    }
 
-    for transcript_idx in range(len(gene.transcripts)): # get exons for each transcript
-        segment_path = []
-        exon_coords = gene.exons[transcript_idx]  #FIXME: gene.exons contains annotated exons, not actual ones in the data
+    terminals = gene.splicegraph.terminals # get terminal exons (based on the genomic coordinates, not translation direction)
+    start_exons = list(np.where(terminals[0])[0]) # list for iteration
+    end_exons = set(np.where(terminals[1])[0]) # set for fast lookup
 
-        for exon_start, exon_end in exon_coords: # get exon id from exon coordinates
-            try:
-                exon_id = vertices_list.index([exon_start, exon_end])
-            except ValueError: # exon not found in splicegraph
-                logging.warning(f"Exon {exon_start}-{exon_end} not found in splicegraph.")
-                continue
+    def is_forward(prev_exon: int, next_exon: int) -> bool:
+        """
+        Return True if moving forward along the splicegraph - going downstream in genomic coordinates
+        """
+        prev_start, prev_end = exon_coords[prev_exon]
+        next_start, next_end = exon_coords[next_exon]
+        return next_start > prev_start
 
-            segment_path.extend(sorted(exon_to_segments[exon_id]))
+    def dfs(exon_id: int, exon_path: List[int]):
+        """
+        Explore all valid exon paths starting from exon_id.
+        """
+        exon_path.append(exon_id)
 
-        trie.insert(segment_path)
+        # If the current exon is an end terminal, convert the exon path to a segment path
+        if exon_id in end_exons:
+            segment_path = []
+            for e_id in exon_path:
+                segment_path.extend(exon_to_segments[e_id])
+
+            # If on negative strand, reverse segment order
+            if gene.strand == '-':
+                segment_path = segment_path[::-1]
+            trie.insert(segment_path) # Insert the complete segment path into the trie
+            return
+
+        for next_exon in np.where(splice_edges[exon_id])[0]:
+            if next_exon in exon_path:
+                continue  # avoid cycles #TODO: ask if that ok! duplication events?
+            if not is_forward(exon_id, next_exon):
+                continue  # skip backward jumps
+            # Recursively call dfs with a copy of current path extended by next_exon
+            dfs(next_exon, exon_path[:])
+
+    for start_exon in start_exons:
+        dfs(start_exon, [])
 
     return trie
+
 
 def extract_kmers_from_graph(gene,
                              segment_sequences: Dict[int, str],
