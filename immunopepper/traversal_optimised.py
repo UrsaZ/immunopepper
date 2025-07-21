@@ -3,6 +3,8 @@ from typing import List, Tuple, Dict, Set
 import numpy as np
 import logging
 
+from immunopepper.namedtuples import GeneTable
+
 # Define stop codons for early termination
 STOP_CODONS = {"TAA", "TAG", "TGA"}
 
@@ -21,7 +23,7 @@ class SegmentPathTrie:
 
     def is_valid_path(self, path: List[int]) -> bool:
         """
-        Return True for a segment id path that matches a full path in the trie. 
+        Return True for a segment id path that matches path[0:i] in the trie. 
         """
         node = self.root
         for seg_id in path:
@@ -129,7 +131,7 @@ def build_segment_trie(gene) -> SegmentPathTrie:
 
 def extract_kmers_from_graph(gene,
                              segment_sequences: Dict[int, str],
-                             cds_start_coords: List[Tuple[int, int]],
+                             genetable: GeneTable,
                              k: int = 27,
                              step: int = 3) -> Set[Tuple[Tuple[int, int, int], ...]]:
     """
@@ -138,13 +140,16 @@ def extract_kmers_from_graph(gene,
     Parameters:
         gene: Gene object with .segmentgraph and .splicegraph
         segment_sequences: dict mapping segment_id -> DNA sequence (str)    #TODO: can use ref chromosome sequence here
-        cds_start_coords: list of tuples (segment_id, offset) marking CDS starts #TODO: cds list of cds start coordinates
+        genetable: NamedTuple with gene-transcript-cds mapping tables derived from .gtf file. 
+                Has attributes ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_ts']
         k: k-mer size (default 27)
         step: propagation step in nt (default 3)
 
     Returns:
         Set of unique k-mers, each as a tuple of (segment_id, start, end)
     """
+    # Get a list of all annotated cds start coordinates for the gene
+    cds_starts = list(set(genetable.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(genetable.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
 
     # Build a trie of valid segment paths from actual transcripts
     trie = build_segment_trie(gene)
@@ -157,9 +162,8 @@ def extract_kmers_from_graph(gene,
     queue: deque = deque()
 
     # Initialize 27-mers from CDS start positions
-    for seg_id, offset in cds_start_coords:
-        init_paths = build_initial_kmers(seg_id, offset, k, segment_sequences, gene.segmentgraph.seg_edges, trie)
-        for path in init_paths:
+    init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, trie)
+    for path in init_paths:
             queue.append(path)
             unique_kmers.add(tuple(path))
 
@@ -170,7 +174,7 @@ def extract_kmers_from_graph(gene,
         
         # Try to advance by 3 nt (--> 1 aa)
         # new_paths is a list of lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, step, segment_sequences, gene.segmentgraph.seg_edges, gene.segmentgraph.segments, trie)
+        new_paths = propagate_kmer() #TODO: update arguments
 
         # iterate over all possible propagated paths
         for new_path in new_paths:
@@ -194,7 +198,7 @@ def build_initial_kmers(cds_starts: List[int],
     Build all valid k-mer paths (e.g., 27-mers) starting from CDS start positions.
 
     Args:
-        cds_starts: List of genomic CDS start coordinates.
+        cds_starts: List of genomic CDS start coordinates (0-based).
         k: k-mer length (number of nucleotides).
         segments: 2xN array of genomic start and end positions per segment (gene.segmentgraph.segments).
         strand: '+' or '-' indicating gene orientation.
@@ -272,108 +276,127 @@ def build_initial_kmers(cds_starts: List[int],
 
     return results
 
-def propagate_kmer(path: List[Tuple[int, int, int]],
-                   step: int,
-                   segment_sequences: Dict[int, str],
-                   seg_edges: np.ndarray,
-                   segments: np.ndarray,
+def propagate_kmer(kmer: List[Tuple[int, int, int]],
+                   segment_coords: np.ndarray,
+                   strand: str,
                    trie: SegmentPathTrie) -> List[List[Tuple[int, int, int]]]:
     """
-    Propagate a k-mer forward by 'step' nt in all valid directions, constrained by the SegmentPathTrie.
+    Propagate a k-mer (always 27nt) forward by 3 nt, respecting strand and valid segment paths.
+    
+    If 3 nt can't be added from the current segment, extend recursively through multiple
+    valid child segments using trie paths.
 
     Args:
-        path: Current k-mer path as a list of (segment_id, start, end).
-        step: Number of nt to shift forward.
-        segment_sequences: Segment ID -> sequence string.
-        seg_edges: Segment adjacency matrix (spladder gene.segmentgraph.seg_edges).
-        segments: 2xN with [start, end] for each segment based on the strand (spladder gene.segmentgraph.segments) #TODO: test with both strands
-        trie: A SegmentPathTrie object that validates segment paths.
+        kmer: Current k-mer as a list of (segment_id, start, end)
+        segment_coords: 2 x N array with genomic coordinates of segments (start, end). gene.segmentgraph.segments
+        strand: '+' or '-' indicating direction
+        trie: A SegmentPathTrie with valid segment paths
 
     Returns:
-        A list of all possible propagated k-mer paths (each a list of tuples).
+        A list of new propagated k-mers (as lists of (segment_id, start, end))
     """
-    all_paths = [] # Will hold all valid propagated paths
+    new_paths = []
 
-    # Compute segment path inline (list of segment IDs in the current path)
-    # used to check if the next segment is connected to the path
-    seg_path = [s for s, _, _ in path]
+    # Extract the segment path (list of segment IDs order)
+    seg_path = [seg_id for seg_id, _, _ in kmer]
 
-    # --- Step 1: Shift the start of the path forward by 'step' nt ---
-    to_shift = step # How many nt we need to shift the start of the path (start with 3)
-    idx = 0 # Which segment we are currently processing in the path
-    shifted_path = [] # Will hold the path with shifted START
+    # ----------- Step 1: Trim 3 nt from the front -----------
+    head_seg_id, head_start, head_end = kmer[0]
+    head_len = head_end - head_start
 
-    while to_shift > 0 and idx < len(path): # while we still have to shift and the current segment (idx) exists
-        seg_id, start, end = path[idx]  # Get current segment info
-        seg_len = end - start
-        if seg_len <= to_shift: # if the segment is shorter than the shift
-            to_shift -= seg_len # remaning will be subtracted from the next segment
-            idx += 1 # move to the next segment
-        else: # if the segment is long enough to shift
-            shifted_path = path[idx:] # Copy the rest of the path
-            shifted_path[0] = (seg_id, start + to_shift, end) # modify the start of the current segment
-            break
-    else: # The loop finishes without breaking if to_shift == 0 and it was done by seg_len == to_shift
-        shifted_path = path[idx:]
+    if head_len > 3:
+        # Just advance start of first segment
+        if strand == '+':
+            new_head = (head_seg_id, head_start + 3, head_end)
+        else: 
+        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 from the last el.
+            new_head = (head_seg_id, head_start, head_end - 3)
+        trimmed_kmer = [new_head] + kmer[1:] # update the 1st segment
+        new_seg_path = seg_path
+    else:
+        # Remove the first segment completely and subtract remaining from next
+        trimmed_kmer = kmer[1:]
+        new_seg_path = seg_path[1:] # remove 1st segment ID from the path #TODO: not actually needed?
+        if not trimmed_kmer:
+            return []  # Nothing left after trimming
 
-    if not shifted_path:
-        return []
-
-    # --- Step 2: Recursively extend the path's end by 'step' nt ---
-    def extend_path(current_path: List[Tuple[int, int, int]],
-                    current_seg_path: List[int],
-                    step_remaining: int):
-        """
-        Recursively extend the current k-mer path by a given number of nucleotides (step_remaining),
-        traversing into downstream segments as needed. Only valid segment paths are allowed,
-        as determined by the SegmentPathTrie.
-
-        Args:
-            current_path: List of (segment_id, start, end) tuples representing the current (partial) k-mer path.
-            current_seg_path: List of segment IDs in the current_path, used to validate paths in the trie.
-            step_remaining: Number of nucleotides still needed to complete the propagation step.
-
-        Side Effects:
-            Appends all valid extended paths to the `all_paths` list.
-        """
-
-        last_seg_id, last_start, last_end = current_path[-1]
-        seq = segment_sequences.get(last_seg_id, "")
-        available = len(seq) - last_end
-
-        if available >= step_remaining:
-            # Extend within current segment
-            extended = current_path[:-1] + [(last_seg_id, last_start, last_end + step_remaining)] # concatenate two lists
-            all_paths.append(extended)
+        # Adjust the new head segment by 3 - head_len nt
+        next_seg_id, next_start, next_end = trimmed_kmer[0]
+        advance = 3 - head_len # how much is left after subtracting from the 1st segment
+        if strand == '+':
+            new_head = (next_seg_id, next_start + advance, next_end)
         else:
-            # Extend to end of current segment
-            extended_partial = current_path[:-1] + [(last_seg_id, last_start, len(seq))]
-            remaining = step_remaining - available
+            new_head = (next_seg_id, next_start, next_end - advance)
 
-            next_segments = np.where(seg_edges[last_seg_id])[0] # Get all segments connected to the last segment
-            # Iterate over all possible next segments
-            for next_id in next_segments:
-                new_seg_path = current_seg_path + [next_id] # add next segment to the path (a list of segment IDs)
-                if not trie.is_valid_path(new_seg_path): # check if this path exists in any transcript
-                    continue  # Skip invalid transitions
+        trimmed_kmer[0] = new_head
+        
+    # ----------- Step 2: Extend 3 nt at the back -----------
+    tail_seg_id, tail_start, tail_end = trimmed_kmer[-1]
+    seg_start, seg_end = segment_coords[:, tail_seg_id]
 
-                next_seq = segment_sequences.get(next_id, "")
-                if not next_seq:
-                    continue
+    if strand == '+':
+        seg_limit = seg_end
+        remaining = seg_limit - tail_end # how much can we take from the current segment
+        if remaining >= 3:
+            new_tail = (tail_seg_id, tail_start, tail_end + 3)
+            new_paths.append(trimmed_kmer[:-1] + [new_tail])
+        else:
+            to_fill = 3 - remaining # how much will be taken from the next segment(s)
+            base_path = trimmed_kmer
+            if remaining > 0:
+                tail_piece = (tail_seg_id, tail_start, tail_end + remaining)
+                base_path = trimmed_kmer[:-1] + [tail_piece]
 
-                take = min(len(next_seq), remaining) # take the remaining if possible, otherwise take the whole segment length
-                seg_start = segments[0, next_id] # get next segment start position from gene.segmentgraph.segments
-                new_path = extended_partial + [(next_id, seg_start, seg_start + take)]
+            def extend_forward(path, seg_ids, remaining_nt):
+                current_seg = seg_ids[-1]
+                children = trie.children(seg_ids) # get a list of all the segments directly after the current one
+                for child_id in children: # propagate into all possible next segments
+                    child_start, child_end = segment_coords[:, child_id]
+                    child_len = child_end - child_start
+                    take = min(child_len, remaining_nt) # take as much as possible from the next segment
+                    next_piece = (child_id, child_start, child_start + take)
+                    new_path = path + [next_piece]
+                    new_seg_ids = seg_ids + [child_id]
+                    if take == remaining_nt: # next segment had enough nt, propagation done
+                        new_paths.append(new_path)
+                    elif child_len >= 1: # not done yet, extend in the next-next segment
+                        extend_forward(new_path, new_seg_ids, remaining_nt - take)
 
-                if take == remaining: # only if we can take the whole remaining length
-                    all_paths.append(new_path)
-                else: # still have remaining length to propagate
-                    extend_path(new_path, new_seg_path, remaining - take)
+            extend_forward(base_path, new_seg_path, to_fill)
 
-    extend_path(shifted_path, seg_path, step) # actual call to extend the path; shifted_path is the path with shifted start
-    #TODO: update seg_path after shifting the start
+    else:  
+        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 from the 2nd el.
+        seg_limit = seg_start
+        remaining = tail_start - seg_limit
+        if remaining >= 3:
+            new_tail = (tail_seg_id, tail_start - 3, tail_end)
+            new_paths.append(trimmed_kmer[:-1] + [new_tail])
+        else:
+            to_fill = 3 - remaining
+            base_path = trimmed_kmer
+            if remaining > 0:
+                tail_piece = (tail_seg_id, tail_start - remaining, tail_end)
+                base_path = trimmed_kmer[:-1] + [tail_piece]
 
-    return all_paths
+            def extend_reverse(path, seg_ids, remaining_nt):
+                current_seg = seg_ids[-1]
+                children = trie.children(seg_ids) # get a list of all the segments directly after the current one
+                for child_id in children: # propagate into all possible next segments
+                    child_start, child_end = segment_coords[:, child_id]
+                    child_len = child_end - child_start # ok, coordinates in the ascending order in the matrix
+                    take = min(child_len, remaining_nt) # take as much as possible from the next segment
+                    next_piece = (child_id, child_end - take, child_end) 
+                    new_path = path + [next_piece]
+                    new_seg_ids = seg_ids + [child_id]
+                    if take == remaining_nt: # next segment had enough nt, propagation done
+                        new_paths.append(new_path)
+                    elif child_len >= 1: # not done yet, extend in the next-next segment
+                        extend_reverse(new_path, new_seg_ids, remaining_nt - take)
+
+            extend_reverse(base_path, new_seg_path, to_fill)
+
+    return new_paths
+
 
 #TODO: optimise in the end, no need to check the whole path after every propagation
 def contains_stop_codon(path: List[Tuple[int, int, int]],
