@@ -1,4 +1,4 @@
-from collections import deque
+from collections import deque, defaultdict
 from typing import List, Tuple, Dict, Set
 import numpy as np
 import logging
@@ -12,19 +12,21 @@ STOP_CODONS = {"TAA", "TAG", "TGA"}
 class SegmentPathTrie:
     def __init__(self):
         self.root = {}
+        self.transitions = defaultdict(set)  # {from_seg_id: set(of next seg_ids)}
 
     def insert(self, path: List[int]):
         node = self.root
-        for seg_id in path:
+        for i in range(len(path)):
+            seg_id = path[i]
             if seg_id not in node:
                 node[seg_id] = {}
+            if i + 1 < len(path):
+                next_seg_id = path[i + 1]
+                self.transitions[seg_id].add(next_seg_id)
             node = node[seg_id]
         node['__END__'] = True
 
-    def is_valid_path(self, path: List[int]) -> bool:
-        """
-        Return True for a segment id path that matches path[0:i] in the trie. 
-        """
+    def is_valid_path(self, path: List[int]) -> bool: #TODO: potentially remove
         node = self.root
         for seg_id in path:
             if seg_id in node:
@@ -32,11 +34,10 @@ class SegmentPathTrie:
             else:
                 return False
         return True
-    
-    def children(self, path: List[int]) -> List[int]:
+
+    def children_from_full_path(self, path: List[int]) -> List[int]:   #TODO. potentially remove
         """
-        Return all valid next segment IDs that follow the given segment path prefix,
-        sorted in ascending order.
+        Return valid next segment IDs that follow the given path from its start.
         """
         node = self.root
         for seg_id in path:
@@ -45,7 +46,37 @@ class SegmentPathTrie:
             else:
                 return []
         return sorted(k for k in node.keys() if k != '__END__')
-    
+
+    def children(self, partial_path: List[int]) -> List[int]:
+        """
+        Return valid next segment IDs that follow the given partial segment path,
+        even if the path starts inside any full path stored in the trie.
+
+        For example, if the trie contains:
+            - [3, 2, 1, 0]
+            - [3, 1, 0]
+
+        Then:
+            - partial_path [2, 1] → [0]
+            - partial_path [1]    → [0]
+            - partial_path [3]    → [2, 1]
+        """
+        results = []
+
+        def dfs(node, current_path):
+            for seg_id, child in node.items():
+                if seg_id == '__END__':
+                    continue
+                new_path = current_path + [seg_id]
+                if new_path[-len(partial_path):] == partial_path:
+                    # If partial path matches tail, collect next children
+                    results.extend(k for k in child.keys() if k != '__END__')
+                dfs(child, new_path)
+
+        dfs(self.root, [])
+        return sorted(set(results))
+
+
     def get_all_paths(self) -> List[List[int]]:
         def dfs(node, path, paths):
             for key, child in node.items():
@@ -262,7 +293,7 @@ def build_initial_kmers(cds_starts: List[int],
             return
 
         # Propagate to all valid children in the trie
-        next_seg_ids = trie.children(seg_path)
+        next_seg_ids = trie.children(seg_path) #TODO: test
         for next_id in next_seg_ids:
             next_seg_path = seg_path + [next_id]
             if trie.is_valid_path(next_seg_path):
@@ -316,7 +347,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
     else:
         # Remove the first segment completely and subtract remaining from next
         trimmed_kmer = kmer[1:]
-        new_seg_path = seg_path[1:] # remove 1st segment ID from the path #TODO: not actually needed?
+        new_seg_path = seg_path[1:] # remove 1st segment ID from the path
         if not trimmed_kmer:
             return []  # Nothing left after trimming
 
@@ -337,7 +368,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
     if strand == '+':
         seg_limit = seg_end
         remaining = seg_limit - tail_end # how much can we take from the current segment
-        if remaining >= 3:
+        if remaining >= 3: # enough space to propagate in the current segment
             new_tail = (tail_seg_id, tail_start, tail_end + 3)
             new_paths.append(trimmed_kmer[:-1] + [new_tail])
         else:
@@ -348,15 +379,14 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                 base_path = trimmed_kmer[:-1] + [tail_piece]
 
             def extend_forward(path, seg_ids, remaining_nt):
-                current_seg = seg_ids[-1]
-                children = trie.children(seg_ids) # get a list of all the segments directly after the current one
+                children = trie.children(seg_ids) # get a list of all the segments directly after the current kmer path #TODO: test
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
                     child_len = child_end - child_start
                     take = min(child_len, remaining_nt) # take as much as possible from the next segment
                     next_piece = (child_id, child_start, child_start + take)
-                    new_path = path + [next_piece]
-                    new_seg_ids = seg_ids + [child_id]
+                    new_path = path + [next_piece] # list of kmers
+                    new_seg_ids = seg_ids + [child_id] # list of seg ids
                     if take == remaining_nt: # next segment had enough nt, propagation done
                         new_paths.append(new_path)
                     elif child_len >= 1: # not done yet, extend in the next-next segment
@@ -379,15 +409,14 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                 base_path = trimmed_kmer[:-1] + [tail_piece]
 
             def extend_reverse(path, seg_ids, remaining_nt):
-                current_seg = seg_ids[-1]
-                children = trie.children(seg_ids) # get a list of all the segments directly after the current one
+                children = trie.children(seg_ids) # get a list of all the segments directly after the current one #TODO: test
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
                     child_len = child_end - child_start # ok, coordinates in the ascending order in the matrix
                     take = min(child_len, remaining_nt) # take as much as possible from the next segment
                     next_piece = (child_id, child_end - take, child_end) 
-                    new_path = path + [next_piece]
-                    new_seg_ids = seg_ids + [child_id]
+                    new_path = path + [next_piece] # list of kmer tuples
+                    new_seg_ids = seg_ids + [child_id] # list of seg_ids
                     if take == remaining_nt: # next segment had enough nt, propagation done
                         new_paths.append(new_path)
                     elif child_len >= 1: # not done yet, extend in the next-next segment
