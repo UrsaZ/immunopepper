@@ -5,9 +5,6 @@ import logging
 
 from immunopepper.namedtuples import GeneTable
 
-# Define stop codons for early termination
-STOP_CODONS = {"TAA", "TAG", "TGA"}
-
 # A trie class to hold all valid segment paths derived from real transcripts
 class SegmentPathTrie:
     def __init__(self):
@@ -140,69 +137,9 @@ def build_segment_trie(gene) -> SegmentPathTrie:
 
     return trie
 
-def extract_kmers_from_graph(gene,
-                             segment_sequences: Dict[int, str],
-                             genetable: GeneTable,
-                             k: int = 27,
-                             step: int = 3) -> Set[Tuple[Tuple[int, int, int], ...]]:
-    """
-    Extract unique k-mers from a segment graph using propagation strategy.
-
-    Parameters:
-        gene: Gene object with .segmentgraph and .splicegraph
-        segment_sequences: dict mapping segment_id -> DNA sequence (str)    #TODO: can use ref chromosome sequence here
-        genetable: NamedTuple with gene-transcript-cds mapping tables derived from .gtf file. 
-                Has attributes ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_ts']
-        k: k-mer size (default 27)
-        step: propagation step in nt (default 3)
-
-    Returns:
-        Set of unique k-mers, each as a tuple of (segment_id, start, end)
-    """
-    # Get a list of all annotated cds start coordinates for the gene
-    cds_starts = list(set(genetable.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(genetable.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
-
-    # Build a trie of valid segment paths from actual transcripts
-    trie = build_segment_trie(gene)
-
-    # Set to store final k-mers as tuples of (segment_id, start, end)
-    unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set()
-
-    # Queue for k-mers to be propagated 
-    # deque is a list-like container with fast appends and pops on either end
-    queue: deque = deque()
-
-    # Initialize 27-mers from CDS start positions
-    init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, trie)
-    for path in init_paths:
-            queue.append(path)
-            unique_kmers.add(tuple(path))
-
-    # Propagate k-mers (active paths) through the segment graph
-    # the graph is traversed 5'--> 3', not transcript by transcript.
-    while queue: # While there are k-mers to propagate
-        current_path = queue.popleft() # Remove and return a k-mer from the left side
-        
-        # Try to advance by 3 nt (--> 1 aa)
-        # new_paths is a list of lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer() #TODO: update arguments
-
-        # iterate over all possible propagated paths
-        for new_path in new_paths:
-            if not contains_stop_codon(new_path, segment_sequences): # Check for stop codon in the new last 3 nt, terminate path if found
-                path_tuple = tuple(new_path)
-
-                # this will be true for alternative starts, which all lead to the same segment
-                # this segment needs to be propagated only once, so we do not append it to queue again
-                if path_tuple not in unique_kmers:
-                    unique_kmers.add(path_tuple)
-                    queue.append(new_path)
-
-    return unique_kmers
-
 def build_initial_kmers(cds_starts: List[int],
                         k: int,
-                        segments: np.ndarray,
+                        segment_coords: np.ndarray,
                         strand: str,
                         trie: SegmentPathTrie) -> List[List[Tuple[int, int, int]]]:
     """
@@ -211,7 +148,7 @@ def build_initial_kmers(cds_starts: List[int],
     Args:
         cds_starts: List of genomic CDS start coordinates (0-based).
         k: k-mer length (number of nucleotides).
-        segments: 2xN array of genomic start and end positions per segment (gene.segmentgraph.segments).
+        segment_coords: 2xN array of genomic start and end positions per segment (gene.segmentgraph.segments).
         strand: '+' or '-' indicating gene orientation.
         trie: A SegmentPathTrie used to validate segment paths.
 
@@ -222,7 +159,7 @@ def build_initial_kmers(cds_starts: List[int],
     seen = set()
 
     # Build a lookup for fast start coordinate → (segment_id, offset) resolution
-    seg_coords = segments.T  # Shape (N, 2), each row: (start, end)
+    seg_coords = segment_coords.T  # Shape (N, 2), each row: (start, end)
     segment_lens = {i: abs(end - start) for i, (start, end) in enumerate(seg_coords)}
 
     # Helper: map genomic CDS start to segment ID and offset within the 1st segment
@@ -405,17 +342,95 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
 
     return new_paths
 
+#TODO: instead of my custom functions, try using existing functions/Biophython
+def reverse_complement(seq: str) -> str:
+    comp = str.maketrans("ACGTacgt", "TGCAtgca")
+    return seq.translate(comp)[::-1]
 
-#TODO: optimise in the end, no need to check the whole path after every propagation
-def contains_stop_codon(path: List[Tuple[int, int, int]],
-                        segment_sequences: Dict[int, str]) -> bool:
-    seq = ""
-    for seg_id, start, end in path:
-        seq += segment_sequences[seg_id][start:end]
+#FIXME: probably wrong in many aspects
+# absolute vs relative coordinates; dfs as the last 3nt might not be in the same segment; + and - strand logic is wrong
+def extract_last_codon(kmer, segment_coords, seq, strand) -> str:
+    """Extract the last 3 nt of the current kmer path across segments."""
+    last_nts = []
+    nt_needed = 3
+    segs = kmer[::-1] if strand == '+' else kmer  # reverse for '+' strand because appending 3' end
 
-    for i in range(0, len(seq) - 2, 3):
-        codon = seq[i:i+3]
-        if codon in STOP_CODONS:
-            return True
+    for seg_id, start, end in segs:
+        seg_start, seg_end = segment_coords[:, seg_id]
+        abs_start = seg_start + start
+        abs_end = seg_start + end
 
-    return False
+        seg_seq = seq[abs_start:abs_end]
+        last_nts.extend(seg_seq[::-1] if strand == '+' else seg_seq)  # reversed for '+' strand
+
+        if len(last_nts) >= 3:
+            break
+
+    last_3 = ''.join(last_nts[-3:][::-1] if strand == '+' else last_nts[:3])
+    return reverse_complement(last_3) if strand == '-' else last_3
+
+def check_stop_codon(codon: str) -> bool:
+    return codon.upper() in {"TAA", "TAG", "TGA"}
+
+def extract_kmers_from_graph(gene,
+                             ref_mut_seq: str,
+                             genetable: GeneTable,
+                             k: int = 27) -> Set[Tuple[Tuple[int, int, int], ...]]:
+    """
+    Extract unique k-mers from a segment graph using propagation strategy.
+
+    Parameters:
+        gene: Gene object with .strand, .segmentgraph and .splicegraph
+        ref_mut_seq: a dict with reference and mutated sequences for the gene
+        genetable: NamedTuple with gene-transcript-cds mapping tables derived from .gtf file. 
+                Has attributes ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_ts']
+        k: k-mer size (default 27)
+
+    Returns:
+        Set of unique k-mers, each as a tuple of (segment_id, start, end)
+    """
+    # Get gene's sequence (str). If no germline mutations, use the reference sequence.
+    seq = ref_mut_seq['background']
+
+    # Get a list of all annotated cds start coordinates for the gene
+    cds_starts = list(set(genetable.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(genetable.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
+
+    # Build a trie of valid segment paths from actual transcripts
+    trie = build_segment_trie(gene)
+
+    # Set to store final k-mers as tuples of (segment_id, start, end)
+    unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set()
+
+    # Queue for k-mers to be propagated 
+    # deque is a list-like container with fast appends and pops on either end
+    queue: deque = deque()
+
+    # Initialize 27-mers from CDS start positions
+    init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, trie)
+    for path in init_paths:
+            queue.append(path)
+            unique_kmers.add(tuple(path))
+
+    # Propagate k-mers (active paths) through the segment graph
+    # the graph is traversed in the direction of the translation, not transcript by transcript.
+    while queue: # While there are k-mers to propagate
+        current_path = queue.popleft() # Remove and return a k-mer from the left side
+        
+        # Try to advance by 3 nt (--> 1 aa)
+        # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
+        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, trie)
+
+        # iterate over all possible next kmers
+        for new_path in new_paths:
+            path_tuple = tuple(new_path)
+            # this will be true for alternative starts, which all lead to the same segment
+            # this segment needs to be propagated only once, so we do not append it to queue again
+            if path_tuple not in unique_kmers:
+                unique_kmers.add(path_tuple)
+
+                codon = extract_last_codon(new_path, gene.segmentgraph.segments, seq, gene.strand)
+                if check_stop_codon(codon):
+                    continue  # stop codon found → don’t propagate further
+                queue.append(new_path)  # no stop codon → continue propagating
+
+    return unique_kmers
