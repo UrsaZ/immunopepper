@@ -286,15 +286,19 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         remaining = seg_limit - tail_end # how much can we take from the current segment
         if remaining >= 3: # enough space to propagate in the current segment
             new_tail = (tail_seg_id, tail_start, tail_end + 3)
+            last_three = [(tail_end, tail_end + 3)] # genomic coordinates of the three added NTs
             new_paths.append(trimmed_kmer[:-1] + [new_tail])
+            #TODO: use last_three to check for STOP, add STOP flag etc.
         else:
             to_fill = 3 - remaining # how much will be taken from the next segment(s)
             base_path = trimmed_kmer
+            last_three = []
             if remaining > 0:
                 tail_piece = (tail_seg_id, tail_start, tail_end + remaining)
                 base_path = trimmed_kmer[:-1] + [tail_piece]
+                last_three.append((tail_end, tail_end + remaining))
 
-            def extend_forward(path, seg_ids, remaining_nt):
+            def extend_forward(path, seg_ids, remaining_nt, last_three):
                 children = trie.children(seg_ids) # get a list of all the segments directly after the current kmer path #TODO: test
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
@@ -303,12 +307,14 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                     next_piece = (child_id, child_start, child_start + take)
                     new_path = path + [next_piece] # list of kmers
                     new_seg_ids = seg_ids + [child_id] # list of seg ids
+                    new_last_three = last_three + [(child_start, child_start + take)]
                     if take == remaining_nt: # next segment had enough nt, propagation done
                         new_paths.append(new_path)
+                        #TODO: use new_last_three to check for STOP, add STOP flag etc.
                     elif child_len >= 1: # not done yet, extend in the next-next segment
-                        extend_forward(new_path, new_seg_ids, remaining_nt - take)
+                        extend_forward(new_path, new_seg_ids, remaining_nt - take, new_last_three)
 
-            extend_forward(base_path, new_seg_path, to_fill)
+            extend_forward(base_path, new_seg_path, to_fill, last_three)
 
     else:  
         # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 from the 2nd el.
@@ -316,15 +322,19 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         remaining = tail_start - seg_limit
         if remaining >= 3: # enough space to propagate in the current segment
             new_tail = (tail_seg_id, tail_start - 3, tail_end)
+            last_three = [(tail_start - 3, tail_start)]
             new_paths.append(trimmed_kmer[:-1] + [new_tail])
+            #TODO: use new_last_three to check for STOP, add STOP flag etc.
         else: # not enough space in the current segment, need to go to the next one
             to_fill = 3 - remaining # how much will be taken from the next segment(s)
             base_path = trimmed_kmer
+            last_three = []
             if remaining > 0:
                 tail_piece = (tail_seg_id, tail_start - remaining, tail_end)
                 base_path = trimmed_kmer[:-1] + [tail_piece]
+                last_three.append((tail_start - remaining, tail_start))
 
-            def extend_reverse(path, seg_ids, remaining_nt):
+            def extend_reverse(path, seg_ids, remaining_nt, last_three):
                 children = trie.children(seg_ids) # get a list of all the segments directly after the current one #TODO: test
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
@@ -333,12 +343,14 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                     next_piece = (child_id, child_end - take, child_end) 
                     new_path = path + [next_piece] # list of kmer tuples
                     new_seg_ids = seg_ids + [child_id] # list of seg_ids
+                    new_last_three = last_three + [(child_end - take, child_end)]
                     if take == remaining_nt: # next segment had enough nt, propagation done
                         new_paths.append(new_path)
+                        #TODO: use new_last_three to check for STOP, add STOP flag etc.
                     elif child_len >= 1: # not done yet, extend in the next-next segment
-                        extend_reverse(new_path, new_seg_ids, remaining_nt - take)
+                        extend_reverse(new_path, new_seg_ids, remaining_nt - take, new_last_three)
 
-            extend_reverse(base_path, new_seg_path, to_fill)
+            extend_reverse(base_path, new_seg_path, to_fill, last_three)
 
     return new_paths
 
@@ -347,35 +359,14 @@ def reverse_complement(seq: str) -> str:
     comp = str.maketrans("ACGTacgt", "TGCAtgca")
     return seq.translate(comp)[::-1]
 
-#FIXME: probably wrong in many aspects
-# absolute vs relative coordinates; dfs as the last 3nt might not be in the same segment; + and - strand logic is wrong
-def extract_last_codon(kmer, segment_coords, seq, strand) -> str:
-    """Extract the last 3 nt of the current kmer path across segments."""
-    last_nts = []
-    nt_needed = 3
-    segs = kmer[::-1] if strand == '+' else kmer  # reverse for '+' strand because appending 3' end
-
-    for seg_id, start, end in segs:
-        seg_start, seg_end = segment_coords[:, seg_id]
-        abs_start = seg_start + start
-        abs_end = seg_start + end
-
-        seg_seq = seq[abs_start:abs_end]
-        last_nts.extend(seg_seq[::-1] if strand == '+' else seg_seq)  # reversed for '+' strand
-
-        if len(last_nts) >= 3:
-            break
-
-    last_3 = ''.join(last_nts[-3:][::-1] if strand == '+' else last_nts[:3])
-    return reverse_complement(last_3) if strand == '-' else last_3
-
 def check_stop_codon(codon: str) -> bool:
     return codon.upper() in {"TAA", "TAG", "TGA"}
 
 def extract_kmers_from_graph(gene,
                              ref_mut_seq: str,
                              genetable: GeneTable,
-                             k: int = 27) -> Set[Tuple[Tuple[int, int, int], ...]]:
+                             k: int = 27,
+                             stop_on_stop: bool = True) -> Set[Tuple[Tuple[int, int, int], ...]]:
     """
     Extract unique k-mers from a segment graph using propagation strategy.
 
@@ -385,10 +376,12 @@ def extract_kmers_from_graph(gene,
         genetable: NamedTuple with gene-transcript-cds mapping tables derived from .gtf file. 
                 Has attributes ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_ts']
         k: k-mer size (default 27)
+        stop_on_stop: whether to stop propagating kmers with in-frame STOP codons
 
     Returns:
         Set of unique k-mers, each as a tuple of (segment_id, start, end)
     """
+    #TODO: decide if gene.from_sparse() will be done here
     # Get gene's sequence (str). If no germline mutations, use the reference sequence.
     seq = ref_mut_seq['background']
 
@@ -428,9 +421,10 @@ def extract_kmers_from_graph(gene,
             if path_tuple not in unique_kmers:
                 unique_kmers.add(path_tuple)
 
-                codon = extract_last_codon(new_path, gene.segmentgraph.segments, seq, gene.strand)
-                if check_stop_codon(codon):
-                    continue  # stop codon found → don’t propagate further
+                if stop_on_stop:
+                    codon = extract_last_codon(new_path, gene.segmentgraph.segments, seq, gene.strand)
+                    if check_stop_codon(codon):
+                        continue  # stop codon found → don’t propagate further
                 queue.append(new_path)  # no stop codon → continue propagating
 
     return unique_kmers
