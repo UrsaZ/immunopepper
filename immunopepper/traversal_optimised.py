@@ -5,93 +5,59 @@ import logging
 
 from immunopepper.namedtuples import GeneTable
 
-# A trie class to hold all valid segment paths derived from real transcripts
-class SegmentPathTrie:
+# A defaultdict to hold all valid segment paths derived from real transcripts
+class SegmentPathIndex:
     def __init__(self):
-        self.root = {}
-        self.transitions = defaultdict(set)  # {from_seg_id: set(of next seg_ids)}
+        self.suffix_index: Dict[Tuple[int, ...], Set[int]] = defaultdict(set)
+        self.paths: List[List[int]] = [] # list of full transcript paths with seg_ids
 
     def insert(self, path: List[int]):
-        node = self.root
-        for i in range(len(path)):
-            seg_id = path[i]
-            if seg_id not in node:
-                node[seg_id] = {}
-            if i + 1 < len(path):
-                next_seg_id = path[i + 1]
-                self.transitions[seg_id].add(next_seg_id)
-            node = node[seg_id]
-        node['__END__'] = True
+        """
+        Insert full segment path and generate all contiguous subpaths (prefixes, infixes, suffixes)
+        into the suffix_index.
+        """
+        self.paths.append(path)
+        n = len(path)
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                subpath = tuple(path[i:j])
+                next_seg = path[j]
+                self.suffix_index[subpath].add(next_seg) # add next_seg to the set with the correct key (create if not yet existing)
 
     def children(self, partial_path: List[int]) -> List[int]:
         """
-        Return valid next segment IDs that follow the given partial segment path,
-        even if the path starts inside any full path stored in the trie.
-
-        For example, if the trie contains:
-            - [3, 2, 1, 0]
-            - [3, 1, 0]
-
-        Then:
-            - partial_path [2, 1] → [0]
-            - partial_path [1]    → [0]
-            - partial_path [3]    → [2, 1]
+        Return valid next segments that can follow a given subpath (fast lookup).
         """
-        results = []
-
-        def dfs(node, current_path):
-            for seg_id, child in node.items():
-                if seg_id == '__END__':
-                    continue
-                new_path = current_path + [seg_id]
-                if new_path[-len(partial_path):] == partial_path:
-                    # If partial path matches tail, collect next children
-                    results.extend(k for k in child.keys() if k != '__END__')
-                dfs(child, new_path)
-
-        dfs(self.root, [])
-        return sorted(set(results))
-
+        return sorted(self.suffix_index.get(tuple(partial_path), [])) # return [] if subpath not in the index
 
     def get_all_paths(self) -> List[List[int]]:
-        """Get all complete paths stored in the trie for visualization or debugging."""
-        def dfs(node, path, paths):
-            for key, child in node.items():
-                if key == '__END__':
-                    paths.append(path[:])
-                else:
-                    path.append(key)
-                    dfs(child, path, paths)
-                    path.pop()
-        all_paths = []
-        dfs(self.root, [], all_paths)
-        return all_paths
+        return self.paths
 
     def __str__(self):
-        paths = self.get_all_paths()
-        return '\n'.join(f"Path {i+1}: {path}" for i, path in enumerate(paths))
+        return '\n'.join(f"Path {i+1}: {path}" for i, path in enumerate(self.paths))
 
-def build_segment_trie(gene) -> SegmentPathTrie:
+def build_segment_index(gene) -> SegmentPathIndex:
     """
-    Build a trie of valid segment paths by traversing the splicegraph.
+    Build a SegmentPathIndex of valid segment paths by traversing the splicegraph.
     Segment paths are derived from exon connectivity and segment-exon matches.
     If the strand is '-', the path is reversed at the end.
 
     Args:
-        gene: An object containing the strand, splicegraph and segmentgraph of a gene.
+        gene: An object containing the strand, splicegraph, and segmentgraph of a gene.
 
     Returns:
-        SegmentPathTrie: A trie containing all valid segment paths derived from splicegraph paths.
+        SegmentPathIndex: An index containing all valid segment paths and subpaths derived from the splicegraph.
     """
-    trie = SegmentPathTrie()
-    seg_match = gene.segmentgraph.seg_match # 2D boolean matrix (exons x segments) 
-    splice_edges = gene.splicegraph.edges # 2D boolean adjacency matrix (exons x exons)
+    index = SegmentPathIndex()
+    seg_match = gene.segmentgraph.seg_match  # 2D boolean matrix (exons x segments) 
+    splice_edges = gene.splicegraph.edges    # 2D boolean adjacency matrix (exons x exons)
     exon_coords = gene.splicegraph.vertices.T  # (N, 2) → [start, end] per exon
-    # a dict mapping each exon ID to the list of segment IDs it contains
+
+    # Map exon → list of segment IDs
     exon_to_segments = {
         exon_id: list(np.where(seg_match[exon_id])[0])
-        for exon_id in range(seg_match.shape[0])
-    }
+        for exon_id in range(seg_match.shape[0])}
 
     terminals = gene.splicegraph.terminals # get terminal exons (based on the genomic coordinates, not translation direction)
     start_exons = list(np.where(terminals[0])[0]) # list for iteration
@@ -120,7 +86,7 @@ def build_segment_trie(gene) -> SegmentPathTrie:
             # If on negative strand, reverse segment order
             if gene.strand == '-':
                 segment_path = segment_path[::-1]
-            trie.insert(segment_path) # Insert the complete segment path into the trie
+            index.insert(segment_path) # Insert the complete segment path into the index
             return
 
         # iterate over all possible next exons
@@ -135,13 +101,13 @@ def build_segment_trie(gene) -> SegmentPathTrie:
     for start_exon in start_exons:
         dfs(start_exon, [])
 
-    return trie
+    return index
 
 def build_initial_kmers(cds_starts: List[int],
                         k: int,
                         segment_coords: np.ndarray,
                         strand: str,
-                        trie: SegmentPathTrie) -> List[List[Tuple[int, int, int]]]:
+                        index: SegmentPathIndex) -> List[List[Tuple[int, int, int]]]:
     """
     Build all valid k-mer paths (e.g., 27-mers) starting from CDS start positions.
 
@@ -150,7 +116,7 @@ def build_initial_kmers(cds_starts: List[int],
         k: k-mer length (number of nucleotides).
         segment_coords: 2xN array of genomic start and end positions per segment (gene.segmentgraph.segments).
         strand: '+' or '-' indicating gene orientation.
-        trie: A SegmentPathTrie used to validate segment paths.
+        index: A SegmentPathIndex used to validate segment paths.
 
     Returns:
         List of k-mer paths. Each path is a list of (segment_id, genomic_start, genomic_end) tuples.
@@ -209,8 +175,8 @@ def build_initial_kmers(cds_starts: List[int],
                 seen.add(path_tuple)
             return
 
-        # Propagate to all valid children in the trie
-        next_seg_ids = trie.children(seg_path) #TODO: test
+        # Propagate to all valid children in the index
+        next_seg_ids = index.children(seg_path)
         for next_id in next_seg_ids:
             next_seg_path = seg_path + [next_id]
             dfs(next_id, 0, remaining, new_path, next_seg_path)
@@ -226,18 +192,18 @@ def build_initial_kmers(cds_starts: List[int],
 def propagate_kmer(kmer: List[Tuple[int, int, int]],
                    segment_coords: np.ndarray,
                    strand: str,
-                   trie: SegmentPathTrie) -> List[List[Tuple[int, int, int]]]:
+                   index: SegmentPathIndex) -> List[List[Tuple[int, int, int]]]:
     """
     Propagate a k-mer (always 27nt) forward by 3 nt, respecting strand and valid segment paths.
     
     If 3 nt can't be added from the current segment, extend recursively through multiple
-    valid child segments using trie paths. If no child segments are available, the output will be an empty list.
+    valid child segments using index paths. If no child segments are available, the output will be an empty list.
 
     Args:
         kmer: Current k-mer as a list of (segment_id, start, end)
         segment_coords: 2 x N array with genomic coordinates of segments (start, end). gene.segmentgraph.segments
         strand: '+' or '-' indicating direction
-        trie: A SegmentPathTrie with valid segment paths
+        index: A SegmentPathIndex with valid segment paths
 
     Returns:
         A list of new propagated k-mers (as lists of (segment_id, start, end))
@@ -299,7 +265,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                 last_three.append((tail_end, tail_end + remaining))
 
             def extend_forward(path, seg_ids, remaining_nt, last_three):
-                children = trie.children(seg_ids) # get a list of all the segments directly after the current kmer path #TODO: test
+                children = index.children(seg_ids) # get a list of all the segments directly after the current kmer path #TODO: test
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
                     child_len = child_end - child_start
@@ -335,7 +301,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                 last_three.append((tail_start - remaining, tail_start))
 
             def extend_reverse(path, seg_ids, remaining_nt, last_three):
-                children = trie.children(seg_ids) # get a list of all the segments directly after the current one #TODO: test
+                children = index.children(seg_ids) # get a list of all the segments directly after the current one #TODO: test
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
                     child_len = child_end - child_start # ok, coordinates in the ascending order in the matrix
@@ -353,6 +319,54 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
             extend_reverse(base_path, new_seg_path, to_fill, last_three)
 
     return new_paths
+
+def extract_last_three_coords(kmer_path: List[Tuple[int, int, int]], strand: str) -> List[int]:
+    """
+    Extract the start genomic coordinates of the last 3 nucleotides in a k-mer path.
+
+    Args:
+        kmer_path: List of (segment_id, start, end) tuples
+        strand: '+' or '-' strand
+
+    Returns:
+        List of 3 integer start coordinates of the last 3 nucleotides, in translation order.
+    """
+    total_len = 0
+    last_three_coords = []
+
+    for seg_id, start, end in reversed(kmer_path):
+        seg_len = end - start
+        for i in range(seg_len - 1, -1, -1):
+            if total_len >= 3:
+                break
+            if strand == '+':
+                nt_start = start + i
+            else:
+                nt_start = end - i - 1
+            last_three_coords.insert(0, nt_start)
+            total_len += 1
+
+        if total_len >= 3:
+            break
+
+    return last_three_coords
+
+def extract_sequence_from_coords(coords: List[int], 
+                                 gene_sequence: str, 
+                                 gene_start: int) -> str:
+    """
+    Extracts a nucleotide sequence from a gene sequence using a list of genomic coordinates.
+
+    Args:
+        coords: List of genomic coordinates of the last three NTs.
+        gene_sequence: The nucleotide sequence corresponding to the full gene region.
+        gene_start: Genomic start coordinate of the gene (used to align coords to gene_sequence).
+
+    Returns:
+        str: The concatenated nucleotide sequence for all provided coordinate segments.
+    """
+    seq = [gene_sequence[abs_c - gene_start] for abs_c in coords]
+    return ''.join(seq)
 
 #TODO: instead of my custom functions, try using existing functions/Biophython
 def reverse_complement(seq: str) -> str:
@@ -388,8 +402,8 @@ def extract_kmers_from_graph(gene,
     # Get a list of all annotated cds start coordinates for the gene
     cds_starts = list(set(genetable.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(genetable.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
 
-    # Build a trie of valid segment paths from actual transcripts
-    trie = build_segment_trie(gene)
+    # Build an index of valid segment paths from actual transcripts
+    index = build_segment_index(gene)
 
     # Set to store final k-mers as tuples of (segment_id, start, end)
     unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set()
@@ -399,7 +413,8 @@ def extract_kmers_from_graph(gene,
     queue: deque = deque()
 
     # Initialize 27-mers from CDS start positions
-    init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, trie)
+    #TODO: check for stop codon!
+    init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, index)
     for path in init_paths:
             queue.append(path)
             unique_kmers.add(tuple(path))
@@ -411,7 +426,7 @@ def extract_kmers_from_graph(gene,
         
         # Try to advance by 3 nt (--> 1 aa)
         # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, trie)
+        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index)
 
         # iterate over all possible next kmers
         for new_path in new_paths:
@@ -421,8 +436,9 @@ def extract_kmers_from_graph(gene,
             if path_tuple not in unique_kmers:
                 unique_kmers.add(path_tuple)
 
-                if stop_on_stop:
-                    codon = extract_last_codon(new_path, gene.segmentgraph.segments, seq, gene.strand)
+                if stop_on_stop: #FIXME:
+                    last_three_nt = extract_last_three_coords(new_path, gene.strand)
+                    codon = extract_sequence_from_coords(last_three_nt, seq, gene.start)
                     if check_stop_codon(codon):
                         continue  # stop codon found → don’t propagate further
                 queue.append(new_path)  # no stop codon → continue propagating
