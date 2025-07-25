@@ -203,7 +203,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         kmer: Current k-mer as a list of (segment_id, start, end)
         segment_coords: 2 x N array with genomic coordinates of segments (start, end). gene.segmentgraph.segments
         strand: '+' or '-' indicating direction
-        index: A SegmentPathIndex with valid segment paths
+        index: A SegmentPathIndex with valid segment continuations
 
     Returns:
         A list of new propagated k-mers (as lists of (segment_id, start, end))
@@ -332,7 +332,7 @@ def extract_sequence_from_coords_tuple(coords: List[Tuple[int, int]],
     Extracts a nucleotide sequence from a gene sequence using a list of genomic coordinates.
 
     Args:
-        coords: List of (start, end) genomic coordinate tuples.
+        coords: List of (seg_id, start, end) genomic coordinate tuples.
         gene_sequence: The nucleotide sequence corresponding to the full gene region.
         gene_start: Genomic start coordinate of the gene (used to align coords to gene_sequence).
 
@@ -340,7 +340,8 @@ def extract_sequence_from_coords_tuple(coords: List[Tuple[int, int]],
         str: The concatenated nucleotide sequence for all provided coordinate segments.
     """
     seq = []
-    for (seg_id, start, end) in coords:
+    sorted_coords = sorted(coords) # make sure the segments are in the increasing order
+    for (seg_id, start, end) in sorted_coords:
         rel_start = start - gene_start
         rel_end = end - gene_start
         seq.append(gene_sequence[rel_start:rel_end])
@@ -394,8 +395,8 @@ def extract_kmers_from_graph(gene,
     #TODO: check for stop codon!
     init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, index)
     for path in init_paths:
-            queue.append(path)
-            unique_kmers.add(tuple(path))
+        queue.append(path)
+        unique_kmers.add(tuple(path))
 
     # Propagate k-mers (active paths) through the segment graph
     # the graph is traversed in the direction of the translation, not transcript by transcript.
