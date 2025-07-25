@@ -325,9 +325,10 @@ def extract_sequence_from_coords_int(coords: List[int],
     seq = [gene_sequence[abs_c - gene_start] for abs_c in coords]
     return ''.join(seq)
 
-def extract_sequence_from_coords_tuple(coords: List[Tuple[int, int]], 
+def extract_sequence_from_kmers(coords: List[Tuple[int, int, int]], 
                                  gene_sequence: str, 
-                                 gene_start: int) -> str:
+                                 gene_start: int, 
+                                 strand: str) -> str:
     """
     Extracts a nucleotide sequence from a gene sequence using a list of genomic coordinates.
 
@@ -335,17 +336,23 @@ def extract_sequence_from_coords_tuple(coords: List[Tuple[int, int]],
         coords: List of (seg_id, start, end) genomic coordinate tuples.
         gene_sequence: The nucleotide sequence corresponding to the full gene region.
         gene_start: Genomic start coordinate of the gene (used to align coords to gene_sequence).
+        strand: '+' or '-' indicating the strand of the gene.
 
     Returns:
-        str: The concatenated nucleotide sequence for all provided coordinate segments.
+        str: The (possibly reverse complemented) nucleotide sequence for the kmer.
     """
     seq = []
-    sorted_coords = sorted(coords) # make sure the segments are in the increasing order
+    sorted_coords = sorted(coords) #TODO: ask if this OK!
+
     for (seg_id, start, end) in sorted_coords:
         rel_start = start - gene_start
         rel_end = end - gene_start
         seq.append(gene_sequence[rel_start:rel_end])
-    return ''.join(seq)
+
+    joined = ''.join(seq)
+    if strand == '-':
+        return reverse_complement(joined)
+    return joined
 
 #TODO: instead of my custom functions, try using existing functions/Biophython
 def reverse_complement(seq: str) -> str:
@@ -415,7 +422,7 @@ def extract_kmers_from_graph(gene,
             if path_tuple not in unique_kmers:
                 
                 # coordinates --> NTs
-                nt_seq = extract_sequence_from_coords_tuple(new_path, seq, gene.start) #TODO: check if this could be done more efficiently
+                nt_seq = extract_sequence_from_kmers(new_path, seq, gene.start, gene.strand) #TODO: check if this could be done more efficiently
                 unique_kmers.add(path_tuple)
 
                 if stop_on_stop:
