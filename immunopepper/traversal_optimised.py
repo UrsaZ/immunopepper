@@ -1,5 +1,5 @@
 from collections import deque, defaultdict
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, Optional
 import numpy as np
 import logging
 
@@ -122,7 +122,7 @@ def build_initial_kmers(cds_starts: List[int],
         List of k-mer paths. Each path is a list of (segment_id, genomic_start, genomic_end) tuples.
     """
     results = []
-    seen = set()
+    seen = set() # to avoid generating redundant initial kmers
 
     # Build a lookup for fast start coordinate → (segment_id, offset) resolution
     seg_coords = segment_coords.T  # Shape (N, 2), each row: (start, end)
@@ -362,6 +362,23 @@ def reverse_complement(seq: str) -> str:
 def check_stop_codon(seq: str) -> bool:
     return seq[-3:].upper() in {"TAA", "TAG", "TGA"} # check last three NT
 
+def has_in_frame_stop(seq: str) -> Tuple[bool, Optional[int]]:
+    """
+    Checks for the presence of an in-frame stop codon anywhere in the kmer.
+
+    Args:
+        seq: A nucleotide sequence (expected to be in-frame)
+
+    Returns:
+        (has_stop: bool, position: Optional[int]) where position is the
+        index of the first nucleotide of the stop codon, or None if not found.
+    """
+    for i in range(0, len(seq) - 2, 3):
+        codon = seq[i:i+3]
+        if codon.upper() in {"TAA", "TAG", "TGA"}:
+            return True, i  # i is the relative NT position of the stop
+    return False, None
+
 def extract_kmers_from_graph(gene,
                              ref_mut_seq: str,
                              genetable: GeneTable,
@@ -399,9 +416,16 @@ def extract_kmers_from_graph(gene,
     queue: deque = deque()
 
     # Initialize 27-mers from CDS start positions
-    #TODO: check for stop codon!
     init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, index)
+    # get kmer sequence, check for STOP codons
     for path in init_paths:
+        nt_seq = extract_sequence_from_kmers(path, seq, gene.start, gene.strand)
+        if stop_on_stop:
+            has_stop, stop_pos = has_in_frame_stop(nt_seq)
+            if has_stop:
+                #TODO: ask what to do with short initial kmers
+                continue
+        # if no STOP in the initial kmer, save to results and add to queue to propagate
         queue.append(path)
         unique_kmers.add(tuple(path))
 
