@@ -5,7 +5,9 @@ import logging
 import itertools
 
 from immunopepper.dna_to_peptide import dna_to_peptide
-from immunopepper.namedtuples import GeneTable
+from immunopepper.namedtuples import GeneTable, Coord, Flag, Peptide
+from immunopepper.dna_to_peptide import dna_to_peptide
+from immunopepper.translate import complementary_seq
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
 class SegmentPathIndex:
@@ -385,6 +387,7 @@ def has_in_frame_stop(seq: str) -> Tuple[bool, Optional[int]]:
             return True, i  # i is the relative NT position of the stop
     return False, None
 
+#TODO: replace mutations.get_mut_comb()
 def kmer_to_mutations(kmer: List[Tuple[int, int, int]], mutation_pos: dict) -> List[Tuple]:
     """
     Returns all non-empty subsets of mutations that fall within the kmer.
@@ -470,6 +473,64 @@ def get_sub_mut_dna(background_seq: str,
         if not np.isnan(pos): # if mutation covered by a kmer
             sub_dna = sub_dna[:pos] + mut_base + sub_dna[pos+1:]
     return sub_dna
+
+#TODO: replace translate.get_peptide_result with this
+def get_peptide_result(kmer: List[Tuple[int, int, int]],
+                       strand: str,
+                       variant_comb: List[int],
+                       somatic_mutation_sub_dict: Dict[int, Dict[str, str]],
+                       ref_mut_seq: Dict[str, str],
+                       gene_start: int,
+                       all_read_frames) -> Tuple["Peptide", "Flag"]:
+    """
+    Generate mutated and reference peptides from a kmer and variant combination.
+
+    Parameters
+    ----------
+    kmer: List of (seg_id, start, stop) tuples representing genomic segments.
+    strand: '+' or '-'.
+    variant_comb: List of variant positions.
+    somatic_mutation_sub_dict: Dict from variant pos to mutation details.
+    ref_mut_seq: Dict with keys 'ref' and 'background' sequences.
+    gene_start: Genomic start coordinate of the gene.
+    all_read_frames: Reading frame metadata.
+
+    Returns
+    -------
+    Tuple of Peptide and Flag objects.
+    """
+
+    # Choose correct background/reference sequences
+    if somatic_mutation_sub_dict:
+        ref_seq = ref_mut_seq['background']
+    else:
+        ref_seq = ref_mut_seq['ref']
+
+    mut_seq = ref_mut_seq['background']
+
+    # Get sub-DNA strings (mutated and reference)
+    peptide_dna_str_mut = get_sub_mut_dna(mut_seq, kmer, variant_comb, somatic_mutation_sub_dict, strand, gene_start)
+    peptide_dna_str_ref = get_sub_mut_dna(ref_seq, kmer, np.nan, somatic_mutation_sub_dict, strand, gene_start)
+
+    # Reverse-complement for '-' strand (reverse done inside get_sub_mut_dna)
+    if strand == "-":
+        peptide_dna_str_mut = complementary_seq(peptide_dna_str_mut)
+        peptide_dna_str_ref = complementary_seq(peptide_dna_str_ref)
+
+    # Translate DNA to peptide
+    peptide_mut, mut_has_stop_codon = dna_to_peptide(peptide_dna_str_mut, all_read_frames)
+    peptide_ref, ref_has_stop_codon = dna_to_peptide(peptide_dna_str_ref, all_read_frames)
+
+    # if the stop codon appears before translating the second exon, mark 'single'
+    if len(kmer) < 2 or len(peptide_mut[0])*3 <= abs(kmer[0][2] - kmer[0][1]) + 1:
+        is_isolated = True
+    else:
+        is_isolated = False
+        
+    # Wrap results
+    peptide = Peptide(peptide_mut, peptide_ref)
+    flag = Flag(mut_has_stop_codon, is_isolated)
+    return peptide, flag
 
 def get_kmers_and_translate(gene,
                              ref_mut_seq: str,
