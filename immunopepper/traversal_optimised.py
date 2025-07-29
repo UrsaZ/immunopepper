@@ -2,7 +2,9 @@ from collections import deque, defaultdict
 from typing import List, Tuple, Dict, Set, Optional
 import numpy as np
 import logging
+import itertools
 
+from immunopepper.dna_to_peptide import dna_to_peptide
 from immunopepper.namedtuples import GeneTable
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
@@ -120,6 +122,7 @@ def build_initial_kmers(cds_starts: List[int],
 
     Returns:
         List of k-mer paths. Each path is a list of (segment_id, genomic_start, genomic_end) tuples.
+        genomic_end is exclusive. 
     """
     results = []
     seen = set() # to avoid generating redundant initial kmers
@@ -308,6 +311,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
 
     return new_paths
 
+#TODO: not used currently
 def extract_sequence_from_coords_int(coords: List[int], 
                                  gene_sequence: str, 
                                  gene_start: int) -> str:
@@ -359,9 +363,11 @@ def reverse_complement(seq: str) -> str:
     comp = str.maketrans("ACGTacgt", "TGCAtgca")
     return seq.translate(comp)[::-1]
 
+#TODO: not used currently
 def check_stop_codon(seq: str) -> bool:
     return seq[-3:].upper() in {"TAA", "TAG", "TGA"} # check last three NT
 
+#TODO: not used currently
 def has_in_frame_stop(seq: str) -> Tuple[bool, Optional[int]]:
     """
     Checks for the presence of an in-frame stop codon anywhere in the kmer.
@@ -379,7 +385,93 @@ def has_in_frame_stop(seq: str) -> Tuple[bool, Optional[int]]:
             return True, i  # i is the relative NT position of the stop
     return False, None
 
-def extract_kmers_from_graph(gene,
+def kmer_to_mutations(kmer: List[Tuple[int, int, int]], mutation_pos: dict) -> List[Tuple]:
+    """
+    Returns all non-empty subsets of mutations that fall within the kmer.
+
+    Args:
+        kmer: list of (seg_id, start, stop) tuples.
+        mutation_pos: dict of mutation positions (genomic coords as keys).
+
+    Returns:
+        List of tuples representing mutation combinations (excluding empty set).
+    """
+    mut_set = set()
+    for seg_id, start, stop in kmer:
+        for mutation in mutation_pos:
+            if start <= mutation < stop:
+                mut_set.add(mutation)
+                
+    if not mut_set:
+        return np.nan
+
+    mut_list = sorted(mut_set)  # for reproducibility
+    combs = [comb for i in range(1, len(mut_list) + 1)
+             for comb in itertools.combinations(mut_list, i)]
+    return combs
+
+#TODO: replace utils.get_sub_mut_dna with this one
+def get_sub_mut_dna(background_seq: str,
+                    kmer: List[Tuple[int, int, int]],
+                    variant_comb: List[int],
+                    somatic_mutation_sub_dict: Dict[int, Dict[str, str]],
+                    strand: str,
+                    gene_start: int) -> str:
+    """ Get the mutated dna sub-sequence according to mutation specified by the variant_comb.
+
+    Parameters
+    ----------
+    background_seq: List(str). backgound sequence.
+    kmer: List of (seg_id, start, end) genomic coordinate tuples.
+    variant_comb: List(int). List of variant position. Like ['38', '43']
+    somatic_mutation_sub_dict: Dict. variant position -> variant details.
+    strand: gene strand
+
+    Returnvariant_combs
+    -------
+    sub_dna: str. dna when applied somatic mutation (reverse for '-' strand).
+
+    """
+    def _get_variant_pos_offset(variant_pos, kmer, strand):
+        """
+        Convert variant's genomic position to a relative position in the kmer.
+        """
+        offset = 0 # position of the variant within the flattened DNA string in translational order, 0-based
+        takes_effect = False # variant lies on the exon
+        
+        for seg_id, start, end in kmer:
+            if variant_pos >= start and variant_pos < end: # variant inside current segment
+                if strand == '+':
+                    offset += variant_pos - start # add offset within current segment
+                else:
+                    offset += end - variant_pos - 1 # rel. position from the end, -1 beacuse end is exclusive
+                takes_effect = True
+                break
+            else:
+                # If mutation not in the current segment, add the full length of the segment to the offset 
+                offset += end - start
+
+        return offset if takes_effect else np.nan
+
+    if strand == '+': # concatenate exon slices from background_seq
+        sub_dna = ''.join([background_seq[start - gene_start:end - gene_start] for seg_id, start, end in kmer])
+    else: # for '-': reverse slice per pair, no complement yet so that we can apply mutations
+        sub_dna = ''.join([background_seq[start - gene_start:end - gene_start][::-1] for seg_id, start, end in kmer])
+    if variant_comb is np.nan:  # no mutation exist
+        return sub_dna
+
+    # Apply mutations
+    relative_variant_pos = [_get_variant_pos_offset(variant_ipos, kmer, strand) for variant_ipos in variant_comb]
+    for i, variant_ipos in enumerate(variant_comb):
+        # get ref and mutated base from the mutation dict
+        mut_base = somatic_mutation_sub_dict[variant_ipos]['mut_base'] 
+        ref_base = somatic_mutation_sub_dict[variant_ipos]['ref_base']
+        pos = relative_variant_pos[i] # get relative position
+        if not np.isnan(pos): # if mutation covered by a kmer
+            sub_dna = sub_dna[:pos] + mut_base + sub_dna[pos+1:]
+    return sub_dna
+
+def get_kmers_and_translate(gene,
                              ref_mut_seq: str,
                              genetable: GeneTable,
                              k: int = 27,
@@ -419,15 +511,18 @@ def extract_kmers_from_graph(gene,
     init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, index)
     # get kmer sequence, check for STOP codons
     for path in init_paths:
+        #TODO: check for somatic comb., itarate through all the combinations
+
+        # coordinates --> NT --> AA
         nt_seq = extract_sequence_from_kmers(path, seq, gene.start, gene.strand)
+        aa_seq, has_stop = dna_to_peptide(nt_seq, all_read_frames=False)
         if stop_on_stop:
-            has_stop, stop_pos = has_in_frame_stop(nt_seq)
             if has_stop:
                 #TODO: ask what to do with short initial kmers
                 continue
         # if no STOP in the initial kmer, save to results and add to queue to propagate
         queue.append(path)
-        unique_kmers.add(tuple(path))
+        unique_kmers.add(tuple(path)) #TODO: save the seq as well
 
     # Propagate k-mers (active paths) through the segment graph
     # the graph is traversed in the direction of the translation, not transcript by transcript.
@@ -441,16 +536,17 @@ def extract_kmers_from_graph(gene,
         # iterate over all possible next kmers
         for new_path in new_paths:
             path_tuple = tuple(new_path)
+
             # this will be true for alternative starts, which all lead to the same segment
             # this segment needs to be propagated only once, so we do not append it to queue again
             if path_tuple not in unique_kmers:
-                
-                # coordinates --> NTs
+                # coordinates --> NT --> AA
                 nt_seq = extract_sequence_from_kmers(new_path, seq, gene.start, gene.strand) #TODO: check if this could be done more efficiently
-                unique_kmers.add(path_tuple)
+                aa_seq, has_stop = dna_to_peptide(nt_seq, all_read_frames=False)
+                unique_kmers.add(path_tuple) #TODO: save the seq as well
 
-                if stop_on_stop:
-                    if check_stop_codon(nt_seq):
+                if stop_on_stop: #TODO:remove if we always want to stop on stop
+                    if has_stop:
                         continue  # stop codon found → don’t propagate further
                 queue.append(new_path)  # no stop codon → continue propagating
 
