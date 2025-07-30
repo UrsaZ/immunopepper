@@ -8,6 +8,7 @@ from immunopepper.dna_to_peptide import dna_to_peptide
 from immunopepper.namedtuples import GeneTable, Coord, Flag, Peptide
 from immunopepper.translate import complementary_seq
 from immunopepper.filter import is_intron_in_junction_list
+from immunopepper.mutations import get_mut_comb
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
 class SegmentPathIndex:
@@ -313,33 +314,6 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
 
     return new_paths
 
-#TODO: replace mutations.get_mut_comb()
-def kmer_to_mutations(kmer: List[Tuple[int, int, int]], mutation_pos: dict) -> List[Tuple]:
-    """
-    Returns all non-empty subsets of mutations that fall within the kmer.
-
-    Args:
-        kmer: list of (seg_id, start, stop) tuples.
-        mutation_pos: dict of mutation positions (genomic coords as keys).
-
-    Returns:
-        List of tuples representing mutation combinations (excluding empty set).
-    """
-    mut_set = set()
-    for seg_id, start, stop in kmer:
-        for mutation in mutation_pos:
-            if start <= mutation < stop:
-                mut_set.add(mutation)
-                
-    # Always include the "no mutation" case
-    combs = [np.nan]
-
-    if mut_set:
-        mut_list = sorted(mut_set)  # for reproducibility
-        combs += [comb for i in range(1, len(mut_list) + 1)
-                  for comb in itertools.combinations(mut_list, i)]
-    return combs
-
 #TODO: replace utils.get_sub_mut_dna with this one
 def get_sub_mut_dna(background_seq: str,
                     kmer: List[Tuple[int, int, int]],
@@ -502,7 +476,7 @@ def get_kmers_and_translate(gene,
     for path in init_paths:
         path_tuple = tuple(path)
         # get sequences with all possible comb. of somatic mutations applied
-        mut_seq_comb = kmer_to_mutations(path, sub_mutation.somatic_dict)
+        mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
         for variant_comb in mut_seq_comb:
             peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
 
@@ -534,7 +508,7 @@ def get_kmers_and_translate(gene,
                 unique_kmers.add(path_tuple) #TODO: save the seq as well
 
                 # for each next kmer, get sequences with all possible comb. of somatic mutations applied
-                mut_seq_comb = kmer_to_mutations(path, sub_mutation.somatic_dict)
+                mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
                 for variant_comb in mut_seq_comb:
                     peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
                     
@@ -612,7 +586,7 @@ def get_and_write_peptide_and_kmer(peptide_set: object = None,
     for path in init_paths:
         path_tuple = tuple(path)
         # get sequences with all possible comb. of somatic mutations applied
-        mut_seq_comb = kmer_to_mutations(path, sub_mutation.somatic_dict)
+        mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
         for variant_comb in mut_seq_comb:
             peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
 #TODO: continue
@@ -644,7 +618,7 @@ def get_and_write_peptide_and_kmer(peptide_set: object = None,
                 unique_kmers.add(path_tuple) #TODO: save the seq as well
 
                 # for each next kmer, get sequences with all possible comb. of somatic mutations applied
-                mut_seq_comb = kmer_to_mutations(path, sub_mutation.somatic_dict)
+                mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
                 # iterate over all the somatic mutation combinations
                 for variant_comb in mut_seq_comb:
                     peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)

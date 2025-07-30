@@ -4,8 +4,10 @@ import logging
 import sys
 import numpy as np
 import pysam
+import itertools
 
 from functools import reduce
+from typing import List, Tuple
 
 from spladder.classes.gene import Gene
 
@@ -151,12 +153,14 @@ def load_mutations(germline_file: str, somatic_file: str, mutation_sample: str, 
 def exon_to_mutations(gene: Gene, mutation_pos: dict):
     """
     Builds a dictionary mapping exon ids (vertex indices in the spladder graph) to mutation positions.
+
+    mutation_pos is sub_mutation.somatic_dict
     """
-    exon_list = gene.splicegraph.vertices
-    exon_som_dict = {k: [] for k in range(exon_list.shape[1])}
+    exon_list = gene.splicegraph.vertices # 2*N array with exon start and stop positions
+    exon_som_dict = {k: [] for k in range(exon_list.shape[1])} # create empty dict with exon_ids as keys
     for mutation in mutation_pos:
-        for i in range(exon_list.shape[1]):
-            if mutation in range(exon_list[0, i], exon_list[1, i]):
+        for i in range(exon_list.shape[1]): # iterate over all the exons
+            if mutation in range(exon_list[0, i], exon_list[1, i]): # between exon start and stop
                 exon_som_dict[i].append(mutation)
     exon_som_dict[np.nan] = []  # for single cds case
     return exon_som_dict
@@ -182,22 +186,32 @@ def exon_to_expression(gene: Gene, mutation_pos: list[int], count_info: CountInf
 
     return som_expr_dict
 
+# modified for kmers
+def get_mut_comb(kmer: List[Tuple[int, int, int]], mutation_pos: dict) -> List[Tuple]:
+    """
+    Returns all non-empty subsets of mutations that fall within the kmer.
 
-def get_mut_comb(exon_to_mutations: dict[int, list[int]], exon_ids: list[int]):
+    Args:
+        kmer: list of (seg_id, start, stop) tuples.
+        mutation_pos: dict of mutation positions (genomic coords as keys).
+
+    Returns:
+        List of tuples representing mutation combinations (excluding empty set).
     """
-    Get all the mutation combinations for the given vertices (representing exon ids).
-    For example, if exon_to_mutations is {1:[100,200], 2:[300]} and exon_ids is [1,2], the function will return::
-         [nan, (100,), (200,), (300,), (100, 200), (100, 300), (200, 300), (100, 200, 300)]
-    :param exon_to_mutations: maps exon ids to somatic mutation positions
-    :param exon_ids: list of vertices (exon ids) in the spladder graph
-    :return: list of tuple, each tuple containing a possible mutation combination.
-    """
-    mut_comb = [np.nan]
-    if exon_to_mutations is not None:
-        exon_list = map(lambda x: exon_to_mutations[x], exon_ids)
-        all_comb = get_all_comb(reduce(lambda x, y: x + y, exon_list))
-        mut_comb += all_comb
-    return mut_comb
+    mut_set = set()
+    for seg_id, start, stop in kmer:
+        for mutation in mutation_pos:
+            if start <= mutation < stop:
+                mut_set.add(mutation)
+                
+    # Always include the "no mutation" case
+    combs = [np.nan]
+
+    if mut_set:
+        mut_list = sorted(mut_set)  # for reproducibility
+        combs += [comb for i in range(1, len(mut_list) + 1)
+                  for comb in itertools.combinations(mut_list, i)]
+    return combs
 
 
 def get_sub_mutations(mutation: Mutation, sample: str, chromosome: str):
