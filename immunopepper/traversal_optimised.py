@@ -314,67 +314,6 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
 
     return new_paths
 
-#TODO: replace utils.get_sub_mut_dna with this one
-def get_sub_mut_dna(background_seq: str,
-                    kmer: List[Tuple[int, int, int]],
-                    variant_comb: List[int],
-                    somatic_mutation_sub_dict: Dict[int, Dict[str, str]],
-                    strand: str,
-                    gene_start: int) -> str:
-    """ Get the mutated dna sub-sequence according to mutation specified by the variant_comb.
-
-    Parameters
-    ----------
-    background_seq: List(str). backgound sequence.
-    kmer: List of (seg_id, start, end) genomic coordinate tuples.
-    variant_comb: List(int). List of variant position. Like ['38', '43']
-    somatic_mutation_sub_dict: Dict. variant position -> variant details.
-    strand: gene strand
-
-    Return
-    -------
-    sub_dna: str. dna when applied somatic mutation (reverse for '-' strand).
-
-    """
-    def _get_variant_pos_offset(variant_pos, kmer, strand):
-        """
-        Convert variant's genomic position to a relative position in the kmer.
-        """
-        offset = 0 # position of the variant within the flattened DNA string in translational order, 0-based
-        takes_effect = False # variant lies on the exon
-        
-        for seg_id, start, end in kmer:
-            if variant_pos >= start and variant_pos < end: # variant inside current segment
-                if strand == '+':
-                    offset += variant_pos - start # add offset within current segment
-                else:
-                    offset += end - variant_pos - 1 # rel. position from the end, -1 beacuse end is exclusive
-                takes_effect = True
-                break
-            else:
-                # If mutation not in the current segment, add the full length of the segment to the offset 
-                offset += end - start
-
-        return offset if takes_effect else np.nan
-
-    if strand == '+': # concatenate exon slices from background_seq
-        sub_dna = ''.join([background_seq[start - gene_start:end - gene_start] for seg_id, start, end in kmer])
-    else: # for '-': reverse slice per pair, no complement yet so that we can apply mutations
-        sub_dna = ''.join([background_seq[start - gene_start:end - gene_start][::-1] for seg_id, start, end in kmer])
-    if variant_comb is np.nan:  # no mutation exist, or this is a combination with no mutations
-        return sub_dna
-
-    # Apply mutations
-    relative_variant_pos = [_get_variant_pos_offset(variant_ipos, kmer, strand) for variant_ipos in variant_comb]
-    for i, variant_ipos in enumerate(variant_comb):
-        # get ref and mutated base from the mutation dict
-        mut_base = somatic_mutation_sub_dict[variant_ipos]['mut_base'] 
-        ref_base = somatic_mutation_sub_dict[variant_ipos]['ref_base']
-        pos = relative_variant_pos[i] # get relative position
-        if not np.isnan(pos): # if mutation covered by a kmer
-            sub_dna = sub_dna[:pos] + mut_base + sub_dna[pos+1:]
-    return sub_dna
-
 #TODO: replace translate.get_peptide_result with this
 def get_peptide_result(kmer: List[Tuple[int, int, int]],
                        strand: str,

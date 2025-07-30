@@ -9,6 +9,7 @@ import pickle
 import psutil
 import signal as sig
 import sys
+from typing import List, Tuple, Dict
 
 from immunopepper.io_ import collect_results
 from immunopepper.namedtuples import Idx
@@ -79,56 +80,63 @@ def encode_chromosome(in_num):
     return convert_dict[in_num] if in_num in convert_dict else str(in_num)
 
 
-def get_sub_mut_dna(background_seq, coord, variant_comb, somatic_mutation_sub_dict, strand, gene_start):
+def get_sub_mut_dna(background_seq: str,
+                    kmer: List[Tuple[int, int, int]],
+                    variant_comb: List[int],
+                    somatic_mutation_sub_dict: Dict[int, Dict[str, str]],
+                    strand: str,
+                    gene_start: int) -> str:
     """ Get the mutated dna sub-sequence according to mutation specified by the variant_comb.
 
     Parameters
     ----------
     background_seq: List(str). backgound sequence.
-    coord: Namedtuple containing the vertex coordinates.
+    kmer: List of (seg_id, start, end) genomic coordinate tuples.
     variant_comb: List(int). List of variant position. Like ['38', '43']
     somatic_mutation_sub_dict: Dict. variant position -> variant details.
     strand: gene strand
 
-    Returnvariant_combs
+    Return
     -------
-    sub_dna: str. dna when applied somatic mutation.
+    sub_dna: str. dna when applied somatic mutation (reverse for '-' strand).
 
     """
-    def _get_variant_pos_offset(variant_pos, coord_pair_list, strand):
-        offset = 0
-        takes_effect = False
-        for p1, p2 in coord_pair_list:
-            if variant_pos >= p1 and variant_pos < p2:
+    def _get_variant_pos_offset(variant_pos, kmer, strand):
+        """
+        Convert variant's genomic position to a relative position in the kmer.
+        """
+        offset = 0 # position of the variant within the flattened DNA string in translational order, 0-based
+        takes_effect = False # variant lies on the exon
+        
+        for seg_id, start, end in kmer:
+            if variant_pos >= start and variant_pos < end: # variant inside current segment
                 if strand == '+':
-                    offset += variant_pos - p1
+                    offset += variant_pos - start # add offset within current segment
                 else:
-                    offset += p2 - variant_pos - 1
+                    offset += end - variant_pos - 1 # rel. position from the end, -1 beacuse end is exclusive
                 takes_effect = True
                 break
             else:
-                offset = p2 - p1
+                # If mutation not in the current segment, add the full length of the segment to the offset 
+                offset += end - start
 
         return offset if takes_effect else np.nan
 
-    real_coord = list(filter(lambda x: x is not np.nan and x is not None, coord))
-    assert len(real_coord) % 2 == 0
-    coord_pair_list = list(zip(real_coord[::2], real_coord[1::2]))
-
-    if strand == '+':
-        sub_dna = ''.join([background_seq[pair[0] - gene_start:pair[1] - gene_start] for pair in coord_pair_list])
-    else:
-        sub_dna = ''.join([background_seq[pair[0] - gene_start:pair[1] - gene_start][::-1] for pair in coord_pair_list])
-
-    if variant_comb is np.nan:  # no mutation exist
+    if strand == '+': # concatenate exon slices from background_seq
+        sub_dna = ''.join([background_seq[start - gene_start:end - gene_start] for seg_id, start, end in kmer])
+    else: # for '-': reverse slice per pair, no complement yet so that we can apply mutations
+        sub_dna = ''.join([background_seq[start - gene_start:end - gene_start][::-1] for seg_id, start, end in kmer])
+    if variant_comb is np.nan:  # no mutation exist, or this is a combination with no mutations
         return sub_dna
 
-    relative_variant_pos = [_get_variant_pos_offset(variant_ipos, coord_pair_list, strand) for variant_ipos in variant_comb]
+    # Apply mutations
+    relative_variant_pos = [_get_variant_pos_offset(variant_ipos, kmer, strand) for variant_ipos in variant_comb]
     for i, variant_ipos in enumerate(variant_comb):
-        mut_base = somatic_mutation_sub_dict[variant_ipos]['mut_base']
+        # get ref and mutated base from the mutation dict
+        mut_base = somatic_mutation_sub_dict[variant_ipos]['mut_base'] 
         ref_base = somatic_mutation_sub_dict[variant_ipos]['ref_base']
-        pos = relative_variant_pos[i]
-        if pos is not np.nan:
+        pos = relative_variant_pos[i] # get relative position
+        if not np.isnan(pos): # if mutation covered by a kmer
             sub_dna = sub_dna[:pos] + mut_base + sub_dna[pos+1:]
     return sub_dna
 
