@@ -331,29 +331,13 @@ def kmer_to_mutations(kmer: List[Tuple[int, int, int]], mutation_pos: dict) -> L
             if start <= mutation < stop:
                 mut_set.add(mutation)
                 
-    def kmer_to_mutations(kmer: List[Tuple[int, int, int]], mutation_pos: dict) -> List[Tuple]:
-    """
-    Returns all non-empty subsets of mutations that fall within the kmer.
+    # Always include the "no mutation" case
+    combs = [np.nan]
 
-    Args:
-        kmer: list of (seg_id, start, stop) tuples.
-        mutation_pos: dict of mutation positions (genomic coords as keys).
-
-    Returns:
-        List of tuples representing mutation combinations (excluding empty set).
-    """
-    mut_set = set()
-    for seg_id, start, stop in kmer:
-        for mutation in mutation_pos:
-            if start <= mutation < stop:
-                mut_set.add(mutation)
-                
-    if not mut_set:
-        return np.nan
-
-    mut_list = sorted(mut_set)  # for reproducibility
-    combs = [comb for i in range(1, len(mut_list) + 1)
-             for comb in itertools.combinations(mut_list, i)]
+    if mut_set:
+        mut_list = sorted(mut_set)  # for reproducibility
+        combs += [comb for i in range(1, len(mut_list) + 1)
+                  for comb in itertools.combinations(mut_list, i)]
     return combs
 
 #TODO: replace utils.get_sub_mut_dna with this one
@@ -373,7 +357,7 @@ def get_sub_mut_dna(background_seq: str,
     somatic_mutation_sub_dict: Dict. variant position -> variant details.
     strand: gene strand
 
-    Returnvariant_combs
+    Return
     -------
     sub_dna: str. dna when applied somatic mutation (reverse for '-' strand).
 
@@ -403,7 +387,7 @@ def get_sub_mut_dna(background_seq: str,
         sub_dna = ''.join([background_seq[start - gene_start:end - gene_start] for seg_id, start, end in kmer])
     else: # for '-': reverse slice per pair, no complement yet so that we can apply mutations
         sub_dna = ''.join([background_seq[start - gene_start:end - gene_start][::-1] for seg_id, start, end in kmer])
-    if variant_comb is np.nan:  # no mutation exist
+    if variant_comb is np.nan:  # no mutation exist, or this is a combination with no mutations
         return sub_dna
 
     # Apply mutations
@@ -479,6 +463,7 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
 def get_kmers_and_translate(gene,
                              ref_mut_seq: str,
                              genetable: GeneTable,
+                             sub_mutation: dict,
                              k: int = 27,
                              stop_on_stop: bool = True) -> Set[Tuple[Tuple[int, int, int], ...]]:
     """
