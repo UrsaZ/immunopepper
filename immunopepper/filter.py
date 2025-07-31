@@ -142,27 +142,38 @@ def junction_tuple_is_annotated(junction_flag: np.ndarray, vertex_ids: list[int]
                           for i in range(len(vertex_ids) - 1)]
     return tuple(junction_annotated)
 
-
-def is_intron_in_junction_list(splicegraph: Splicegraph, vertex_ids: list[int], strand: str,
+# updated for kmers
+def is_intron_in_junction_list(segmentgraph: object, kmer: list[tuple[int, int, int]], strand: str,
                                junction_list: list[str]):
     """
-    Check if the intron defined by vertex_ids is in the user provided list of junctions
-    :param splicegraph: Spladder splice graph
-    :param vertex_ids: list vertex coordinates in splicegraph defining the intron (typically 2 coordinates)
+    Check if the intron defined by seg_ids is in the user provided list of junctions
+    :param segmentgraph: Spladder segmentgraph (A 2xN array where each column represents [start, end] for the segment based on the strand)
+    :param kmer: kmer with segment tuples with (seg_id, start, stop) in translational order.
     :param strand: '+' for direct, '-' for reverse strand
-    :param junction_list: list of junctions to check the intron against
-    :return: np.nan if junction_list is None or if vertex_ids contains a np.nan
+    :param junction_list: list of junctions to check the intron against. "exon1_end:exon2_start:+" in translational order
+    :return: np.nan if junction_list is None or if seg_ids contains a np.nan
              1 if the intron is in junction_list, 0 if not
     """
+    seg_ids = [seg_id for seg_id, _, _ in kmer] # get seg_ids in translational order
 
-    if np.nan in vertex_ids or junction_list is None:
+    if np.nan in seg_ids or junction_list is None:
         return np.nan
 
-    vertex_coord_list = splicegraph.vertices
-    if strand == '-':
-        vertex_ids = vertex_ids[::-1]  # in negative strand case, the vertex id list is [5,3] instead of [3,5]
-    for i in range(len(vertex_ids) - 1):
-        junction_comb = f'{vertex_coord_list[1, vertex_ids[i]]}:{vertex_coord_list[0, vertex_ids[i + 1]]}:{strand}'
+    seg_coord_list = segmentgraph.segments
+    
+    for i in range(len(seg_ids) - 1):
+        seg1 = seg_ids[i]
+        seg2 = seg_ids[i + 1]
+
+        if strand == '+':
+            end_e1 = seg_coord_list[1, seg1]
+            start_e2 = seg_coord_list[0, seg2]
+        else:
+            end_e1 = seg_coord_list[0, seg1]  # reversed logic
+            start_e2 = seg_coord_list[1, seg2]
+
+        junction_comb = f"{end_e1}:{start_e2}:{strand}"
+
         if junction_comb in junction_list:
             return 1
     return 0
