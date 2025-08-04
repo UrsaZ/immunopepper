@@ -126,7 +126,7 @@ def get_sub_mut_dna(background_seq: str,
         sub_dna = ''.join([background_seq[start - gene_start:end - gene_start] for seg_id, start, end in kmer])
     else: # for '-': reverse slice per pair, no complement yet so that we can apply mutations
         sub_dna = ''.join([background_seq[start - gene_start:end - gene_start][::-1] for seg_id, start, end in kmer])
-    if variant_comb is np.nan:  # no mutation exist, or this is a combination with no mutations
+    if variant_comb is np.nan or sub_dna == "":  # no mutation exist, or this is a combination with no mutations
         return sub_dna
 
     # Apply mutations
