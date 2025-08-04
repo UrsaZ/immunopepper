@@ -44,7 +44,7 @@ class SegmentPathIndex:
     def __str__(self):
         return '\n'.join(f"Path {i+1}: {path}" for i, path in enumerate(self.paths))
 
-def build_segment_index(gene, exon_to_segments) -> SegmentPathIndex:
+def build_segment_index(gene: spladder.classes.gene, exon_to_segments: dict) -> SegmentPathIndex:
     """
     Build a SegmentPathIndex of valid segment paths by traversing the splicegraph.
     Segment paths are derived from exon connectivity and segment-exon matches.
@@ -310,6 +310,16 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
 
     return new_paths
 
+def get_exon_to_segments_dict(seg_match: np.ndarray) -> dict:
+    return {exon_id: list(np.where(seg_match[exon_id])[0]) for exon_id in range(seg_match.shape[0])}
+
+def get_segments_to_exons_dict(exon_to_segments: dict) -> dict:
+    segment_to_exons = defaultdict(set)
+    for exon, segs in exon_to_segments.items():
+        for s in segs:
+            segment_to_exons[s].add(exon)
+    return segment_to_exons
+
 # currently redundant, but good example how it is supposed to look like
 def get_kmers_and_translate(gene,
                              ref_mut_seq: str,
@@ -552,8 +562,8 @@ def get_and_write_peptide_and_kmer(
     len_pep_save = 9999 # save at most this many peptides in the set before writing to file
     
     # check whether the junction (specific combination of vertices) also is annotated as a  junction of a protein coding transcript
-    # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"}
-    gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds) #FIXME: get segment junctions
+    # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"} appearing in any transcript given by .gtf file
+    gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds) #TODO: do I need segment junctions??
     # 2) get a dictionary mapping exon ids to expression data.
     som_exp_dict = exon_to_expression(gene, list(mutation.somatic_dict.keys()), countinfo, seg_counts, mut_count_id) # return a dictionary mapping exon ids to expression data
     
@@ -561,11 +571,10 @@ def get_and_write_peptide_and_kmer(
     # Get a list of all annotated cds start coordinates for the gene
     cds_starts = list(set(table.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(table.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
     
-    # Map exon → list of segment IDs
+    # Map exon → list of segment IDs #TODO: move back into build_segment_index if not used anywhere else
     seg_match = gene.segmentgraph.seg_match  # 2D boolean matrix (exons x segments) 
-    exon_to_segments = {
-        exon_id: list(np.where(seg_match[exon_id])[0])
-        for exon_id in range(seg_match.shape[0])}
+    exon_to_segments = get_exon_to_segments_dict(seg_match)
+    segment_to_exons = get_segments_to_exons_dict(exon_to_segments)
 
     # Build an index of valid continuations from each segment
     index = build_segment_index(gene, exon_to_segments)
@@ -578,20 +587,20 @@ def get_and_write_peptide_and_kmer(
     # Initialize 27-mers from CDS start positions
     init_paths = build_initial_kmers(cds_starts, kmer_length, gene.segmentgraph.segments, gene.strand, index)
 
-    # iteravte over initial kmers, get sequence, translate and check for STOP codons
+    # iterate over initial kmers, get sequence, translate and check for STOP codons
     for path in init_paths:
         path_tuple = tuple(path)
         # get sequences with all possible comb. of somatic mutations applied
         mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
         for variant_comb in mut_seq_comb:
-            peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
-    #TODO: continue
+            peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+            #TODO: continue
             if stop_on_stop:
                 if flag.has_stop:
                     #TODO: ask what to do with short initial kmers
                     continue
                 # if no STOP in the initial kmer, save to results and add to queue to propagate
-            if path_tuple not in unique_kmers: # if this kmer is yet unseen
+            if path_tuple not in unique_kmers: # if this kmer is yet unseen (all mutated sequences have the same kmer coords, so will be repeated)
                 queue.append(path)
                 unique_kmers.add(path_tuple) 
                 #TODO: save the seq as well, only thoose without STOP
@@ -642,7 +651,7 @@ def get_and_write_peptide_and_kmer(
                 mut_seq_comb = get_mut_comb(new_path, sub_mutation.somatic_dict)
                 # iterate over all the somatic mutation combinations
                 for variant_comb in mut_seq_comb:
-                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
+                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
 
                     if stop_on_stop:
                         if flag.has_stop:
