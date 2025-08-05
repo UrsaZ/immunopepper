@@ -5,7 +5,7 @@ import numpy as np
 #TODO For developement
 import pyximport; pyximport.install()
 import sys
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 from immunopepper.dna_to_peptide import dna_to_peptide
 
@@ -13,7 +13,7 @@ from immunopepper.namedtuples import Coord
 from immunopepper.namedtuples import Flag
 from immunopepper.namedtuples import Peptide
 from immunopepper.namedtuples import ReadingFrameTuple
-from immunopepper.utils import get_exon_expr,get_sub_mut_dna
+from immunopepper.utils import get_exon_expr, get_sub_mut_dna
 
 def get_full_peptide(gene, seq, cds_list, countinfo, seg_counts=None, Idx=None, all_read_frames=False):
     """
@@ -218,6 +218,7 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
                        somatic_mutation_sub_dict: Dict[int, Dict[str, str]],
                        ref_mut_seq: Dict[str, str],
                        gene_start: int,
+                       segment_to_exons: dict,
                        all_read_frames: bool = False) -> Tuple["Peptide", "Flag"]:
     """
     Generate mutated and reference peptides from a kmer and variant combination.
@@ -230,6 +231,7 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
     somatic_mutation_sub_dict: Dict from variant pos to mutation details.
     ref_mut_seq: Dict with keys 'ref' and 'background' sequences.
     gene_start: Genomic start coordinate of the gene.
+    segment_to_exons: Dict mapping seg_ids to exon_ids segment belong to
     all_read_frames: if false, only the first peptide until the stop codon is returned, 
     otherwise a list of all translated peptides (for each stop codon) is provided.
 
@@ -258,12 +260,40 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
     # Translate DNA to peptide
     peptide_mut, mut_has_stop_codon = dna_to_peptide(dna_str_mut, all_read_frames)
     peptide_ref, ref_has_stop_codon = dna_to_peptide(dna_str_ref, all_read_frames)
+    #TODO: exit early if STOP is the 1st codon and no aa seq is generated?
 
-    # if the stop codon appears before translating the second exon, mark 'single' #FIXME: can be more than one segment, but still only one exon!!!
-    if len(kmer) < 2 or len(peptide_mut[0])*3 <= abs(kmer[0][2] - kmer[0][1]) + 1:
+    #TODO: all this computation could be removed if we can skip this output
+    # --- Check if the output peptide is translated from a single exon ---
+    # 1. Determine how many codons were actually translated
+    codon_len = len(peptide_mut[0]) * 3  # peptide length in nucleotides
+
+    # 2. Accumulate the actual segment IDs involved in translation
+    translated_nt_count = 0
+    translated_segment_ids = []
+
+    for seg in kmer: #add segment id-s before the stop codon
+        seg_id, seg_start, seg_end = seg
+        seg_len = abs(seg_end - seg_start)
+        if translated_nt_count >= codon_len:
+            break  # already have enough nucleotides
+        translated_segment_ids.append(seg_id)
+        translated_nt_count += seg_len
+
+    # 3. Determine isolation conditions
+    if len(translated_segment_ids) < 2:
         is_isolated = True
     else:
-        is_isolated = False
+        # Check if segment IDs are strictly consecutive (no gaps), ascending or descending
+        diffs = [b - a for a, b in zip(translated_segment_ids, translated_segment_ids[1:])]
+        is_consecutive = all(d == 1 for d in diffs) or all(d == -1 for d in diffs)
+
+        if not is_consecutive: # if gaps, there has to be an intron
+            is_isolated = False
+        else:
+            # If consecutitve, check if all segments share at least one exon
+            exon_sets = [segment_to_exons[sid] for sid in translated_segment_ids]
+            common_exons = set.intersection(*exon_sets)
+            is_isolated = len(common_exons) > 0
         
     # Wrap results #TODO: potentially output DNA seq as well
     peptide = Peptide(peptide_mut, peptide_ref)
