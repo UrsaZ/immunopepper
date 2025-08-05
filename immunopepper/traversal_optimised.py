@@ -8,9 +8,10 @@ import spladder.classes.gene
 from immunopepper.dna_to_peptide import dna_to_peptide
 from immunopepper.namedtuples import GeneTable, Coord, Flag, Peptide
 from immunopepper.translate import complementary_seq, get_peptide_result
-from immunopepper.filter import is_intron_in_junction_list
+from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
 from immunopepper.mutations import get_mut_comb, get_mutated_sequence
 from immunopepper.utils import get_sub_mut_dna
+from immunopepper.io_ import save_fg_peptide_set
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
 class SegmentPathIndex:
@@ -44,6 +45,7 @@ class SegmentPathIndex:
     def __str__(self):
         return '\n'.join(f"Path {i+1}: {path}" for i, path in enumerate(self.paths))
 
+#TODO: potentially limit path length to 27 segments, as no kmer can span more than that
 def build_segment_index(gene: spladder.classes.gene, exon_to_segments: dict) -> SegmentPathIndex:
     """
     Build a SegmentPathIndex of valid segment paths by traversing the splicegraph.
@@ -320,97 +322,6 @@ def get_segments_to_exons_dict(exon_to_segments: dict) -> dict:
             segment_to_exons[s].add(exon)
     return segment_to_exons
 
-# currently redundant, but good example how it is supposed to look like
-def get_kmers_and_translate(gene,
-                             ref_mut_seq: str,
-                             genetable: GeneTable,
-                             sub_mutation: dict,
-                             k: int = 27,
-                             stop_on_stop: bool = True) -> Set[Tuple[Tuple[int, int, int], ...]]:
-    """
-    Extract unique k-mers from a segment graph using propagation strategy.
-
-    Parameters:
-        gene: Gene object with .strand, .segmentgraph and .splicegraph
-        ref_mut_seq: a dict with reference and mutated sequences for the gene
-        genetable: NamedTuple with gene-transcript-cds mapping tables derived from .gtf file. 
-                Has attributes ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_ts']
-        k: k-mer size (default 27)
-        stop_on_stop: whether to stop propagating kmers with in-frame STOP codons
-
-    Returns:
-        Set of unique k-mers, each as a tuple of (segment_id, start, end)
-    """
-    #TODO: decide if gene.from_sparse() will be done here
-
-    # Get a list of all annotated cds start coordinates for the gene
-    cds_starts = list(set(genetable.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(genetable.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
-
-    # Build an index of valid segment paths from actual transcripts
-    seg_match = gene.segmentgraph.seg_match  # 2D boolean matrix (exons x segments) 
-    exon_to_segments = {
-        exon_id: list(np.where(seg_match[exon_id])[0])
-        for exon_id in range(seg_match.shape[0])}
-    index = build_segment_index(gene, exon_to_segments)
-
-    # Set to store final k-mers as tuples of (segment_id, start, end)
-    unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set()
-
-    # Queue for k-mers to be propagated 
-    # deque is a list-like container with fast appends and pops on either end
-    queue: deque = deque()
-
-    # Initialize 27-mers from CDS start positions
-    init_paths = build_initial_kmers(cds_starts, k, gene.segmentgraph.segments, gene.strand, index)
-
-    # iteravte over kmers, get sequence, translate and check for STOP codons
-    for path in init_paths:
-        path_tuple = tuple(path)
-        # get sequences with all possible comb. of somatic mutations applied
-        mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
-        for variant_comb in mut_seq_comb:
-            peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
-
-            if stop_on_stop:
-                if flag.has_stop:
-                    #TODO: ask what to do with short initial kmers
-                    continue
-                # if no STOP in the initial kmer, save to results and add to queue to propagate
-            if path_tuple not in unique_kmers: # if this kmer is yet unseen
-                queue.append(path)
-                unique_kmers.add(path_tuple) #TODO: save the seq as well
-
-    # Propagate k-mers (active paths) through the segment graph
-    # the graph is traversed in the direction of the translation, not transcript by transcript.
-    while queue: # While there are k-mers to propagate
-        current_path = queue.popleft() # Remove and return a k-mer from the left side
-        
-        # Try to advance by 3 nt (--> 1 aa)
-        # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index)
-
-        # iterate over all possible next kmers
-        for new_path in new_paths:
-            path_tuple = tuple(new_path)
-
-            # this will be true for alternative starts, which all lead to the same segment
-            # this segment needs to be propagated only once, so we do not append it to queue again
-            if path_tuple not in unique_kmers:
-                unique_kmers.add(path_tuple) #TODO: save the seq as well
-
-                # for each next kmer, get sequences with all possible comb. of somatic mutations applied
-                mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
-                for variant_comb in mut_seq_comb:
-                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start)
-                    
-                    if stop_on_stop:
-                        if flag.has_stop:
-                            continue
-                    if new_path not in queue:
-                        queue.append(new_path)  # no stop codon → continue propagating
-
-    return unique_kmers
-
 def process_peptide(
     pep_idx: int,
     peptide: object,
@@ -418,7 +329,6 @@ def process_peptide(
     gene: object,
     kmer_path: List[Tuple[int, int, int]],
     variant_id: int,
-    kmer_type: str,
     variant_comb: Union[List[int], float],
     som_exp_dict: dict,
     mutation: object,
@@ -442,7 +352,7 @@ def process_peptide(
 
     # Use kmer path to get an unique kmer ID
     kmer_coord_string = '_'.join(f'{seg}:{start}-{end}' for seg, start, end in kmer_path)
-    new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}_{kmer_type}"
+    new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}"
 
     # Junction list check (if any junction in the path is in the filter list)
     is_intron_in_junction_list_flag = is_intron_in_junction_list(
@@ -471,9 +381,7 @@ def process_peptide(
         variant_seg_expr=seg_exp_variant_comb,
         modified_exons_coord=kmer_path,
         original_exons_coord=kmer_path,  # Assuming no distinction yet
-        vertex_idx=[seg for seg, _, _ in kmer_path],
-        kmer_type=kmer_type
-    )
+        vertex_idx=[seg for seg, _, _ in kmer_path])
     peptide_set.add(namedtuple_to_str(peptide_metadata, sep='\t'))
 
     # Peptide object
@@ -482,7 +390,7 @@ def process_peptide(
         peptide=peptide.mut[pep_idx],
         exons_coor=kmer_path,
         strand=gene.strand,
-        read_frame_annotated=None  # Can be added later
+        read_frame_annotated=None  #TODO: Can be added later
     )
 
     # Generate kmer output
@@ -490,10 +398,7 @@ def process_peptide(
 
     # Optional batch save
     if len(peptide_set) > len_pep_save:
-        save_fg_peptide_set(
-            peptide_set, filepointer, out_dir, fasta_save,
-            verbose=False, id_tag=f'{kmer_type}{ii}'
-        )
+        save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False)
         peptide_set.clear()
 
     return variant_id + 1
@@ -546,7 +451,7 @@ def get_and_write_peptide_and_kmer(
     graph_samples: list, samples contained in the splicing graph object
     fasta_save: bool. whether to save a fasta file with the peptides
     """
-                # from collect_vertex_pairs
+    # -------------- from collect_vertex_pairs
     gene.from_sparse()
 
     # 1) apply germline mutations to the reference sequence
@@ -558,22 +463,21 @@ def get_and_write_peptide_and_kmer(
                                        pos_end=max_pos,
                                        mutation_dict=gene.splicegraph.vertices.max())
 
-                # from get_and_write_peptide_and_kmer
+    # -------------- from get_and_write_peptide_and_kmer
     len_pep_save = 9999 # save at most this many peptides in the set before writing to file
-    
+
     # check whether the junction (specific combination of vertices) also is annotated as a  junction of a protein coding transcript
     # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"} appearing in any transcript given by .gtf file
-    gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds) #TODO: do I need segment junctions??
+    gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds)
     # 2) get a dictionary mapping exon ids to expression data.
     som_exp_dict = exon_to_expression(gene, list(mutation.somatic_dict.keys()), countinfo, seg_counts, mut_count_id) # return a dictionary mapping exon ids to expression data
     
-    #TODO: started updating from here on
+    # -------------- my code
     # Get a list of all annotated cds start coordinates for the gene
     cds_starts = list(set(table.gene_to_cds_begin[gene.name][transcript][0] for transcript in range(len(table.gene_to_cds_begin[gene.name])))) #"gene name", transcript ID
     
-    # Map exon → list of segment IDs #TODO: move back into build_segment_index if not used anywhere else
-    seg_match = gene.segmentgraph.seg_match  # 2D boolean matrix (exons x segments) 
-    exon_to_segments = get_exon_to_segments_dict(seg_match)
+    # Map exons and segment IDs
+    exon_to_segments = get_exon_to_segments_dict(gene.segmentgraph.seg_match)
     segment_to_exons = get_segments_to_exons_dict(exon_to_segments)
 
     # Build an index of valid continuations from each segment
@@ -594,17 +498,16 @@ def get_and_write_peptide_and_kmer(
         mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
         for variant_comb in mut_seq_comb:
             peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
-            #TODO: continue
             if stop_on_stop:
-                if flag.has_stop:
-                    #TODO: ask what to do with short initial kmers
+                if flag.has_stop: # we neither save nor propagate short initial kmers
                     continue
-                # if no STOP in the initial kmer, save to results and add to queue to propagate
+            # if no STOP in the initial kmer, save to results and add to queue to propagate
             if path_tuple not in unique_kmers: # if this kmer is yet unseen (all mutated sequences have the same kmer coords, so will be repeated)
                 queue.append(path)
                 unique_kmers.add(path_tuple) 
                 #TODO: save the seq as well, only thoose without STOP
             # process initial peptides
+            variant_id = 0 # mutation variant id for the kmer, process_peptide returns variant_id +1
             for pep_idx in np.arange(len(peptide.mut)):
                 variant_id = process_peptide(
                                         pep_idx=pep_idx,
@@ -613,7 +516,6 @@ def get_and_write_peptide_and_kmer(
                                         gene=gene,
                                         kmer_path=new_path,
                                         variant_id=variant_id,
-                                        kmer_type=kmer_type,
                                         variant_comb=variant_comb,
                                         som_exp_dict=som_exp_dict,
                                         mutation=mutation,
@@ -626,8 +528,7 @@ def get_and_write_peptide_and_kmer(
                                         len_pep_save=len_pep_save,
                                         kmer=kmer,
                                         gene_kmer_coord=gene_kmer_coord,
-                                        kmer_database=kmer_database,
-                                        ii=ii)
+                                        kmer_database=kmer_database)
 
     # Propagate k-mers (active paths) through the segment graph
     # the graph is traversed in the direction of the translation, not transcript by transcript.
@@ -664,29 +565,28 @@ def get_and_write_peptide_and_kmer(
                     # also in mutation mode, only output the case where ref is different from mutated
                     
                     # iterate over all the peptides (can be more, if more RFs) in the peptide object and process each peptide
-                    for pep_idx in np.arange(len(peptide.mut)):
+                    variant_id = 0 # mutation variant id for the kmer, process_peptide returns variant_id +1
+                    for pep_idx in np.arange(len(peptide.mut)): #TODO: if we later decide we will only do one RF, this loop can be removed
                         variant_id = process_peptide(
-                                        pep_idx=pep_idx,
-                                        peptide=peptide,
-                                        flag=flag,
-                                        gene=gene,
-                                        kmer_path=new_path,
-                                        variant_id=variant_id,
-                                        kmer_type=kmer_type,
-                                        variant_comb=variant_comb,
-                                        som_exp_dict=som_exp_dict,
-                                        mutation=mutation,
-                                        force_ref_peptides=force_ref_peptides,
-                                        junction_list=junction_list,
-                                        peptide_set=peptide_set,
+                                        pep_idx=pep_idx, # RF id for the peptide
+                                        peptide=peptide, # Peptide namedtuple
+                                        flag=flag, # Flag namedtuple
+                                        gene=gene, # Gene object
+                                        kmer_path=new_path, # kmer tuple
+                                        variant_id=variant_id, # id of the mutation comb
+                                        variant_comb=variant_comb, # tuple with mutation comb. coordinates
+                                        som_exp_dict=som_exp_dict, # a dictionary mapping exon ids to expression data.
+                                        mutation=mutation, # Namedtuple Mutation, store the mutation information of specific chromosome and sample. has the attribute ['mode', 'maf_dict', 'vcf_dict']
+                                        force_ref_peptides=force_ref_peptides, # bool, command argument
+                                        junction_list=junction_list, # list, input
+                                        peptide_set=peptide_set, # set to save outputs to
                                         filepointer=filepointer,
                                         out_dir=out_dir,
                                         fasta_save=fasta_save,
                                         len_pep_save=len_pep_save,
                                         kmer=kmer,
                                         gene_kmer_coord=gene_kmer_coord,
-                                        kmer_database=kmer_database,
-                                        ii=ii)
+                                        kmer_database=kmer_database) # set with kmers to be removed on the fly from the kmer sample or matrix files
 
             if not gene.splicegraph.edges is None:
                 gene.to_sparse()
@@ -697,5 +597,4 @@ def get_and_write_peptide_and_kmer(
                             graph_output_samples_ids,
                             graph_samples, filepointer, out_dir, verbose=verbose_save)
         # Save the last batch of peptides
-        save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save,
-                            verbose=False, id_tag=f'{kmer_type}{ii}')
+        save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False)
