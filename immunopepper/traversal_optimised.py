@@ -11,6 +11,8 @@ from immunopepper.translate import complementary_seq, get_peptide_result
 from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
 from immunopepper.mutations import get_mut_comb, get_mutated_sequence, exon_to_expression
 from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
+from immunopepper.utils import replace_I_with_L
+
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
 class SegmentPathIndex:
@@ -321,12 +323,13 @@ def get_segments_to_exons_dict(exon_to_segments: dict) -> dict:
             segment_to_exons[s].add(exon)
     return segment_to_exons
 
-def process_peptide(
+def process_peptide_and_kmer(
     pep_idx: int,
+    kmer: object,
     peptide: object,
     flag: object,
     gene: object,
-    kmer_path: List[Tuple[int, int, int]],
+    kmer_path: List[Tuple[int, int, int]], #TODO: this can be inferred from kmer
     variant_id: int,
     variant_comb: Union[List[int], float],
     som_exp_dict: dict,
@@ -339,7 +342,7 @@ def process_peptide(
     fasta_save: bool,
     len_pep_save: int,
     kmer_database: set) -> int:
-    """Process and save a peptide from a given kmer path and mutation combination."""
+    """Process and save kmers and peptides from a given kmer path and mutation combination."""
     
     # Skip empty or redundant (mutated the same as reference) peptides (unless forced by the user)
     if not peptide.mut[pep_idx] or (
@@ -389,8 +392,11 @@ def process_peptide(
         read_frame_annotated=None  #TODO: Can be added later
     )
 
-    #FIXME: Generate kmer output
-    create_kmer(output_peptide, kmer, gene_kmer_coord, kmer_database)
+    check_database = ((not kmer_database) or (replace_I_with_L(kmer_peptide) not in kmer_database)) # remove on the fly peptides from a database (aa seq)
+
+    if check_database: # if the k-mer was not removed by the database
+        kmer_coord = retrieve_kmer_coordinates(j, k, output_peptide.strand, spanning_index1, spanning_index2, spanning_index1_2, sort_coord)
+        gene_kmer_coord.add((kmer_coord, kmer_peptide, output_peptide.read_frame_annotated))
 
     # Optional batch save
     if len(peptide_set) > len_pep_save:
@@ -435,7 +441,7 @@ def get_and_write_peptide_and_kmer(
     size_factor: Scalar. To adjust the expression counts based on the external file `libsize.tsv`
     junction_list: List. Work as a filter to indicate some exon pair has certain
        ordinary intron which can be ignored further.
-    kmer_database: Set. kmers to be removed on the fly from the kmer sample or matrix files
+    kmer_database: Set. kmers (AA seq) to be removed on the fly from the kmer sample or matrix files
     filepointer: namedtuple, contains the columns and paths of each file of interest
     force_ref_peptides: bool, flag indicating whether to force output of
         mutated peptides which are the same as reference peptides
@@ -462,7 +468,7 @@ def get_and_write_peptide_and_kmer(
     # check whether the junction (specific combination of vertices) also is annotated as a  junction of a protein coding transcript
     # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"} appearing in any transcript given by .gtf file
     gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds)
-    # 2) get a dictionary mapping exon ids to expression data.
+    # 2) get a dictionary mapping somatic mutation positions to segment expression data.
     som_exp_dict = exon_to_expression(gene, list(mutation.somatic_dict.keys()), countinfo, seg_counts, mut_count_id) # return a dictionary mapping exon ids to expression data
     
     # -------------- my code
@@ -492,7 +498,7 @@ def get_and_write_peptide_and_kmer(
         # get sequences with all possible comb. of somatic mutations applied
         mut_seq_comb = get_mut_comb(path, mutation.somatic_dict)
         for variant_comb in mut_seq_comb:
-            peptide, flag = get_peptide_result(path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+            kmer, peptide, flag = get_peptide_result(path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
             if flag.has_stop: # we neither save nor propagate short initial kmers
                 continue
             # if no STOP in the initial kmer, save to results and add to queue to propagate
@@ -503,8 +509,9 @@ def get_and_write_peptide_and_kmer(
             # process initial peptides
             variant_id = 0 # mutation variant id for the kmer, process_peptide returns variant_id +1
             for pep_idx in np.arange(len(peptide.mut)): #TODO: current code does not output multiple mutated peptides, as we only generate the actual RF
-                variant_id = process_peptide(
+                variant_id = process_peptide_and_kmer(
                                         pep_idx=pep_idx,
+                                        kmer=kmer,
                                         peptide=peptide,
                                         flag=flag,
                                         gene=gene,
@@ -544,7 +551,7 @@ def get_and_write_peptide_and_kmer(
                 mut_seq_comb = get_mut_comb(new_path, mutation.somatic_dict)
                 # iterate over all the somatic mutation combinations
                 for variant_comb in mut_seq_comb:
-                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+                    kmer, peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
 
                     if flag.has_stop:
                         continue
@@ -559,8 +566,9 @@ def get_and_write_peptide_and_kmer(
                     # iterate over all the peptides (can be more, if more RFs) in the peptide object and process each peptide
                     variant_id = 0 # mutation variant id for the kmer, process_peptide returns variant_id +1
                     for pep_idx in np.arange(len(peptide.mut)): #TODO: if we later decide we will only do one RF, this loop can be removed
-                        variant_id = process_peptide(
+                        variant_id = process_peptide_and_kmer(
                                         pep_idx=pep_idx, # RF id for the peptide
+                                        kmer=kmer, # kmer namedtuple
                                         peptide=peptide, # Peptide namedtuple
                                         flag=flag, # Flag namedtuple
                                         gene=gene, # Gene object
@@ -576,7 +584,7 @@ def get_and_write_peptide_and_kmer(
                                         out_dir=out_dir,
                                         fasta_save=fasta_save,
                                         len_pep_save=len_pep_save,
-                                        kmer_database=kmer_database) # set with kmers to be removed on the fly from the kmer sample or matrix files
+                                        kmer_database=kmer_database) # set with kmers (aa seq) to be removed on the fly from the kmer sample or matrix files
 
             if not gene.splicegraph.edges is None:
                 gene.to_sparse()

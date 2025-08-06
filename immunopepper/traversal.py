@@ -14,7 +14,7 @@ from immunopepper.io_ import save_kmer_matrix
 from immunopepper.mutations import get_mutated_sequence
 from immunopepper.mutations import exon_to_mutations
 from immunopepper.mutations import get_mut_comb
-from immunopepper.mutations import exon_to_expression
+from immunopepper.mutations import mutation_to_seg_expression
 from immunopepper.namedtuples import Coord
 from immunopepper.namedtuples import OutputPeptide
 from immunopepper.namedtuples import OutputMetadata
@@ -292,7 +292,7 @@ def get_and_write_peptide_and_kmer(peptide_set: object = None,
     # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"}
     gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds)
     # 2) get a dictionary mapping exon ids to expression data.
-    som_exp_dict = exon_to_expression(gene, list(mutation.somatic_dict.keys()), countinfo, seg_counts, mut_count_id) # return a dictionary mapping exon ids to expression data
+    som_exp_dict = mutation_to_seg_expression(gene, list(mutation.somatic_dict.keys()), countinfo, seg_counts, mut_count_id) # return a dictionary mapping exon ids to expression data
     
     gene_kmer_coord = set() # 
     ### 3) iterate over all vertex pairs and translate

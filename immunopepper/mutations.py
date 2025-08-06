@@ -165,24 +165,24 @@ def exon_to_mutations(gene: Gene, mutation_pos: dict):
     exon_som_dict[np.nan] = []  # for single cds case
     return exon_som_dict
 
-
-def exon_to_expression(gene: Gene, mutation_pos: list[int], count_info: CountInfo, seg_counts: np.ndarray,
+# old name: exon_to_expression
+def mutation_to_seg_expression(gene: Gene, mutation_pos: list[int], count_info: CountInfo, seg_counts: np.ndarray,
                        mut_count_id):
     """
-    Builds a dictionary mapping exon ids to expression data.
+    Builds a dictionary mapping mutation positions to expression level of the segment that contains the mutation
     """
     if (count_info is None) or (mut_count_id is None) or (len(mut_count_id) == 0):
         return None
   
-    seg_counts = seg_counts[:, mut_count_id]
-    seg_mat = gene.segmentgraph.segments[0]
+    seg_counts = seg_counts[:, mut_count_id] # Select relevant columns (samples) from the segment expression matrix
+    seg_mat = gene.segmentgraph.segments[0] # Gets the segment start positions as a 1D array.
     som_expr_dict = {}
 
-    for ipos in mutation_pos:
-        seg_id = bisect.bisect(seg_mat, ipos)
-        if seg_id > 0 and ipos <= gene.segmentgraph.segments[1][seg_id - 1]:  # the mutation is within the pos
-            expr = seg_counts[seg_id - 1]
-            som_expr_dict[ipos] = expr
+    for ipos in mutation_pos: 
+        seg_id = bisect.bisect(seg_mat, ipos) # Find the segment id for the mutation position
+        if seg_id > 0 and ipos <= gene.segmentgraph.segments[1][seg_id - 1]:  # the mutation is within the segment
+            expr = seg_counts[seg_id - 1] # Get the expression level for the segment
+            som_expr_dict[ipos] = expr # Assign the expression level to the mutation position
 
     return som_expr_dict
 
