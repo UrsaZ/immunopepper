@@ -59,8 +59,14 @@ OutputMetadata = namedtuple('OutputMetadata', ['peptide', 'output_id', 'read_fra
                                                  'modified_exons_coord','original_exons_coord',	'vertex_idx', 'kmer_type'])
 
 
-VertexPair = namedtuple('VertexPair', ['output_id', 'read_frame','has_stop_codon','modified_exons_coord','original_exons_coord','vertex_idxs','peptide_weight'])
-
+"""
+Kmer namedtuple
+- kmer_path: List of (seg_id, start, stop) tuples representing genomic segments.
+- is_cross_junction: bool. indicate if the kmer spans over the cross junction
+- mut: mutated dna string
+- ref: original dna string
+"""
+Kmer = namedtuple('Kmer', ['kmer_path', 'is_cross_junction', 'mut', 'ref'])
 
 
 """
