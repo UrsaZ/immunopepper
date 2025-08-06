@@ -68,6 +68,7 @@ Kmer namedtuple
 """
 Kmer = namedtuple('Kmer', ['kmer_path', 'is_cross_junction', 'mut', 'ref'])
 
+VertexPair = namedtuple('VertexPair', ['output_id', 'read_frame','has_stop_codon','modified_exons_coord','original_exons_coord','vertex_idxs','peptide_weight'])
 
 """
 Output_kmer namedtuple.
