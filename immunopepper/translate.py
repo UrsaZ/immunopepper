@@ -300,7 +300,7 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
     # Check if the output peptide is translated from a single exon
     is_isolated = is_peptide_isolated(kmer, peptide_mut, segment_to_exons)
         
-    kmer = Kmer(kmer, not flag.is_isolated, dna_str_mut, dna_str_ref)
+    kmer = Kmer(kmer, not is_isolated, dna_str_mut, dna_str_ref)
     peptide = Peptide(peptide_mut, peptide_ref)
     flag = Flag(mut_has_stop_codon, is_isolated)
 
