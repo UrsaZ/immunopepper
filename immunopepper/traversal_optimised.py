@@ -6,12 +6,12 @@ import itertools
 
 import spladder.classes.gene
 from immunopepper.dna_to_peptide import dna_to_peptide
-from immunopepper.namedtuples import GeneTable, Coord, Flag, Peptide
+from immunopepper.namedtuples import GeneTable, Coord, Flag, Peptide, OutputPeptide, OutputMetadata
 from immunopepper.translate import complementary_seq, get_peptide_result
 from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
-from immunopepper.mutations import get_mut_comb, get_mutated_sequence
+from immunopepper.mutations import get_mut_comb, get_mutated_sequence, exon_to_expression
 from immunopepper.utils import get_sub_mut_dna
-from immunopepper.io_ import save_fg_peptide_set
+from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
 class SegmentPathIndex:
@@ -433,7 +433,7 @@ def get_and_write_peptide_and_kmer(
     exon_som_dict: Dict. (exon_id) |-> (mutation_postion)
     countinfo: Namedtuple, contains SplAdder count information
     mutation: Namedtuple Mutation, store the mutation information of specific chromosome and sample.
-        has the attribute ['mode', 'maf_dict', 'vcf_dict']
+        has the attribute ['mode', 'maf_dict', 'vcf_dict'] (sub_mutation)
     table: Namedtuple GeneTable, store the gene-transcript-cds mapping tables derived
        from .gtf file. has attribute ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_cds']
     size_factor: Scalar. To adjust the expression counts based on the external file `libsize.tsv`
@@ -492,12 +492,11 @@ def get_and_write_peptide_and_kmer(
     for path in init_paths:
         path_tuple = tuple(path)
         # get sequences with all possible comb. of somatic mutations applied
-        mut_seq_comb = get_mut_comb(path, sub_mutation.somatic_dict)
+        mut_seq_comb = get_mut_comb(path, mutation.somatic_dict)
         for variant_comb in mut_seq_comb:
-            peptide, flag = get_peptide_result(path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
-            if stop_on_stop:
-                if flag.has_stop: # we neither save nor propagate short initial kmers
-                    continue
+            peptide, flag = get_peptide_result(path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+            if flag.has_stop: # we neither save nor propagate short initial kmers
+                continue
             # if no STOP in the initial kmer, save to results and add to queue to propagate
             if path_tuple not in unique_kmers: # if this kmer is yet unseen (all mutated sequences have the same kmer coords, so will be repeated)
                 queue.append(path)
@@ -544,14 +543,14 @@ def get_and_write_peptide_and_kmer(
                 unique_kmers.add(path_tuple) #TODO: save the seq as well
 
                 # for each next kmer, get sequences with all possible comb. of somatic mutations applied
-                mut_seq_comb = get_mut_comb(new_path, sub_mutation.somatic_dict)
+                mut_seq_comb = get_mut_comb(new_path, mutation.somatic_dict)
                 # iterate over all the somatic mutation combinations
                 for variant_comb in mut_seq_comb:
-                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, sub_mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
 
-                    if stop_on_stop:
-                        if flag.has_stop:
-                            continue
+                    if flag.has_stop:
+                        continue
+                        
                     if new_path not in queue:
                         queue.append(new_path)  # no stop codon → continue propagating
 
