@@ -258,8 +258,7 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
                        somatic_mutation_sub_dict: Dict[int, Dict[str, str]],
                        ref_mut_seq: Dict[str, str],
                        gene_start: int,
-                       segment_to_exons: dict,
-                       all_read_frames: bool = False) -> Tuple[Kmer, Peptide, Flag]:
+                       segment_to_exons: dict) -> Tuple[Kmer, Peptide, Flag]:
     """
     Generate mutated and reference peptides from a kmer and variant combination.
 
@@ -272,7 +271,6 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
     ref_mut_seq: Dict with keys 'ref' and 'background' sequences.
     gene_start: Genomic start coordinate of the gene.
     segment_to_exons: Dict mapping seg_ids to exon_ids segment belong to
-    all_read_frames: if false, only the first peptide until the stop codon is returned, 
     otherwise a list of all translated peptides (for each stop codon) is provided.
 
     Returns
@@ -294,8 +292,8 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
         dna_str_ref = complementary_seq(dna_str_ref)
 
     # Translate DNA to peptide
-    peptide_mut, mut_has_stop_codon = dna_to_peptide(dna_str_mut, all_read_frames)
-    peptide_ref, ref_has_stop_codon = dna_to_peptide(dna_str_ref, all_read_frames)
+    peptide_mut, mut_has_stop_codon = dna_to_peptide(dna_str_mut, False)
+    peptide_ref, ref_has_stop_codon = dna_to_peptide(dna_str_ref, False)
 
     # Check if the output peptide is translated from a single exon
     is_isolated = is_peptide_isolated(kmer, peptide_mut, segment_to_exons)
