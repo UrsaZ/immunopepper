@@ -10,7 +10,6 @@ from immunopepper.namedtuples import GeneTable, Coord, Flag, Peptide, OutputPept
 from immunopepper.translate import complementary_seq, get_peptide_result
 from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
 from immunopepper.mutations import get_mut_comb, get_mutated_sequence, exon_to_expression
-from immunopepper.utils import get_sub_mut_dna
 from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
@@ -409,16 +408,13 @@ def get_and_write_peptide_and_kmer(
             mutation: object = None, mut_count_id: object = None, table: object = None,
             junction_list: object = None, kmer_database: object = None,
             filepointer: object = None,
-            force_ref_peptides: object = False, kmer: object = None,
-            all_read_frames: object = None, graph_output_samples_ids: object = None,
+            force_ref_peptides: object = False,
+            graph_output_samples_ids: object = None,
             graph_samples: object = None, out_dir: object = None, verbose_save: object = None,
             fasta_save: object = None, 
-            gene_info: object = None,
             ref_seq_file: object = None, 
             chrm: object = None, 
-            disable_concat: bool = False, 
-            kmer_length: int = None, 
-            filter_redundant: bool = False) -> object:
+            kmer_length: int = None) -> object:
 
     """
     Traverse the splice graph, get kmers, translate them to peptide sequences, 
@@ -484,6 +480,8 @@ def get_and_write_peptide_and_kmer(
     unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set()
     # Queue for k-mers to be propagated (list-like container with fast appends and pops on either end)
     queue: deque = deque()
+
+    gene_kmer_coord = set()
 
     # Initialize 27-mers from CDS start positions
     init_paths = build_initial_kmers(cds_starts, kmer_length, gene.segmentgraph.segments, gene.strand, index)
