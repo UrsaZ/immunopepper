@@ -5,14 +5,11 @@ import numpy as np
 #TODO For developement
 import pyximport; pyximport.install()
 import sys
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Set
 
 from immunopepper.dna_to_peptide import dna_to_peptide
 
-from immunopepper.namedtuples import Coord
-from immunopepper.namedtuples import Flag
-from immunopepper.namedtuples import Peptide
-from immunopepper.namedtuples import ReadingFrameTuple
+from immunopepper.namedtuples import Coord, Flag, Kmer, Peptide, ReadingFrameTuple
 from immunopepper.utils import get_exon_expr, get_sub_mut_dna
 
 def get_full_peptide(gene, seq, cds_list, countinfo, seg_counts=None, Idx=None, all_read_frames=False):
@@ -211,6 +208,49 @@ def isolated_peptide_result(read_frame, strand, variant_comb, somatic_mutation_s
 
     return peptide, coord, flag
 
+def is_peptide_isolated(
+    kmer: List[Tuple[int, int, int]],
+    peptide_mut: List[str],
+    segment_to_exons: Dict[int, Set[int]]) -> bool:
+    """
+    Determines whether the peptide translation is isolated to a single exon.
+
+    Parameters
+    ----------
+    kmer : List of (seg_id, start, stop) tuples.
+    peptide_mut : List of mutated peptide sequences (from dna_to_peptide).
+    segment_to_exons : Mapping of segment IDs to sets of exon IDs.
+
+    Returns
+    -------
+    bool: True if the peptide is isolated, False otherwise.
+    """
+    codon_len = len(peptide_mut[0]) * 3  # number of nucleotides translated
+
+    translated_nt_count = 0
+    translated_segment_ids = []
+
+    for seg_id, seg_start, seg_end in kmer:
+        seg_len = abs(seg_end - seg_start)
+        if translated_nt_count >= codon_len:
+            break # already have enough nucleotides
+        translated_segment_ids.append(seg_id) # add segment id-s before the stop codon
+        translated_nt_count += seg_len
+
+    if len(translated_segment_ids) < 2:
+        return True
+
+    # Check if segment IDs are strictly consecutive (ascending or descending)
+    diffs = [b - a for a, b in zip(translated_segment_ids, translated_segment_ids[1:])]
+    is_consecutive = all(d == 1 for d in diffs) or all(d == -1 for d in diffs)
+
+    if not is_consecutive: # if gaps, there has to be an intron
+        return False
+
+    # Check if all consecutive segments share at least one exon
+    exon_sets = [segment_to_exons[sid] for sid in translated_segment_ids]
+    common_exons = set.intersection(*exon_sets)
+    return len(common_exons) > 0
 
 def get_peptide_result(kmer: List[Tuple[int, int, int]],
                        strand: str,
@@ -219,7 +259,7 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
                        ref_mut_seq: Dict[str, str],
                        gene_start: int,
                        segment_to_exons: dict,
-                       all_read_frames: bool = False) -> Tuple["Peptide", "Flag"]:
+                       all_read_frames: bool = False) -> Tuple[Kmer, Peptide, Flag]:
     """
     Generate mutated and reference peptides from a kmer and variant combination.
 
@@ -237,15 +277,11 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
 
     Returns
     -------
-    Tuple of Peptide and Flag objects.
+    Tuple of Kmer, Peptide and Flag objects.
     """
 
     # Choose correct background/reference sequences
-    if somatic_mutation_sub_dict:
-        ref_seq = ref_mut_seq['background']
-    else:
-        ref_seq = ref_mut_seq['ref']
-
+    ref_seq = ref_mut_seq['background'] if somatic_mutation_sub_dict else ref_mut_seq['ref']
     mut_seq = ref_mut_seq['background']
 
     # Get sub-DNA strings (mutated and reference)
@@ -260,45 +296,15 @@ def get_peptide_result(kmer: List[Tuple[int, int, int]],
     # Translate DNA to peptide
     peptide_mut, mut_has_stop_codon = dna_to_peptide(dna_str_mut, all_read_frames)
     peptide_ref, ref_has_stop_codon = dna_to_peptide(dna_str_ref, all_read_frames)
-    #TODO: exit early if STOP is the 1st codon and no aa seq is generated?
 
-    #TODO: all this computation could be removed if we can skip this output
-    # --- Check if the output peptide is translated from a single exon ---
-    # 1. Determine how many codons were actually translated
-    codon_len = len(peptide_mut[0]) * 3  # peptide length in nucleotides
-
-    # 2. Accumulate the actual segment IDs involved in translation
-    translated_nt_count = 0
-    translated_segment_ids = []
-
-    for seg in kmer: #add segment id-s before the stop codon
-        seg_id, seg_start, seg_end = seg
-        seg_len = abs(seg_end - seg_start)
-        if translated_nt_count >= codon_len:
-            break  # already have enough nucleotides
-        translated_segment_ids.append(seg_id)
-        translated_nt_count += seg_len
-
-    # 3. Determine isolation conditions
-    if len(translated_segment_ids) < 2:
-        is_isolated = True
-    else:
-        # Check if segment IDs are strictly consecutive (no gaps), ascending or descending
-        diffs = [b - a for a, b in zip(translated_segment_ids, translated_segment_ids[1:])]
-        is_consecutive = all(d == 1 for d in diffs) or all(d == -1 for d in diffs)
-
-        if not is_consecutive: # if gaps, there has to be an intron
-            is_isolated = False
-        else:
-            # If consecutitve, check if all segments share at least one exon
-            exon_sets = [segment_to_exons[sid] for sid in translated_segment_ids]
-            common_exons = set.intersection(*exon_sets)
-            is_isolated = len(common_exons) > 0
+    # Check if the output peptide is translated from a single exon
+    is_isolated = is_peptide_isolated(kmer, peptide_mut, segment_to_exons)
         
-    # Wrap results #TODO: potentially output DNA seq as well
+    kmer = Kmer(kmer, not flag.is_isolated, dna_str_mut, dna_str_ref)
     peptide = Peptide(peptide_mut, peptide_ref)
     flag = Flag(mut_has_stop_codon, is_isolated)
-    return peptide, flag
+
+    return kmer, peptide, flag
 
 
 def get_exhaustive_reading_frames(splicegraph, gene_strand, vertex_order):
