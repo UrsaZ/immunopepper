@@ -55,6 +55,7 @@ from immunopepper.utils import create_libsize
 from immunopepper.utils import get_idx
 from immunopepper.utils import get_total_gene_expr
 from immunopepper.utils import print_memory_diags
+from immunopepper.traversal_optimised import None
 
 
 # intermediate fix to load pickle files stored under previous version
@@ -267,6 +268,9 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
             chrm = gene.chr.strip()
             # Get germline and somatic mutations for the given sample and chromosome
             sub_mutation = get_sub_mutations(mutation, mutation_sample, chrm)
+            # Collect the gene's background reference sequence with applied germline mutations.
+            ref_mut_seq = collect_background_transcripts(gene=gene, ref_seq_file=arg.ref_path,
+                                                         chrm=chrm, mutation=sub_mutation)
             if arg.mutation_sample is not None:
                 mut_count_id = [idx for idx, sample in enumerate(arg.output_samples)
                                 if arg.mutation_sample.replace('-', '').replace('_', '').replace('.', '').replace('/', '') == sample]
@@ -281,6 +285,8 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
             pathlib.Path(get_save_path(filepointer.junction_meta_fp, outbase)).mkdir(exist_ok=True, parents=True)
             if arg.output_fasta:
                 pathlib.Path(get_save_path(filepointer.junction_peptide_fp, outbase)).mkdir(exist_ok=True, parents=True)
+
+#TODO: START HERE -----------------------------------------------------------------------------------------------------
 
             # Traverse the splice graph for the gene to collect valid vertex pairs and sequences
             # considering mutations and frames.
@@ -321,7 +327,15 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
                                            graph_output_samples_ids=output_samples_ids,
                                            graph_samples=arg.output_samples,
                                            verbose_save=verbose,
-                                           fasta_save=arg.output_fasta)
+                                           fasta_save=arg.output_fasta,
+                                           gene_info=genes_info[i],
+                                           ref_seq_file=arg.ref_path,
+                                           chrm=chrm,
+                                           disable_concat=arg.disable_concat,
+                                           kmer_length=arg.kmer,
+                                           filter_redundant=arg.filter_redundant)
+
+#TODO: END -----------------------------------------------------------------------------------------------------
 
             time_per_gene.append(timeit.default_timer() - start_time)
             mem_per_gene.append(print_memory_diags(disable_print=True))
@@ -388,11 +402,15 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
         matching_count_ids = None
 
     # read the variant file
+    # mutation is a namedtuple('Mutation', ['mode', 'germline_dict', 'somatic_dict'])
+    # dict:  Key is mutation position, value is mutations:: {10 : {'mut_base': '*', 'ref_base': 'A'}} 
     mutation = load_mutations(arg.germline, arg.somatic, arg.mutation_sample, arg.heter_code,
                               arg.pickle_samples if arg.use_mut_pickle else None,
                               arg.sample_name_map, arg.output_dir if arg.use_mut_pickle else None)
 
     # load splice graph
+    # graph_data is an array with spladder.classes.gene.Gene objects
+    # graph_meta is a dictionary
     logging.info('Loading splice graph ...')
     start_time = timeit.default_timer()
     with open(arg.splice_path, 'rb') as graph_fp:
@@ -420,8 +438,10 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
     # add CDS starts and reading frames to the respective nodes
     logging.info('Add reading frame to splice graph ...')
     start_time = timeit.default_timer()
+    #graph_info is a list with GeneInfo objects for each gene.
+    # GeneInfo contains vertex_succ_list, vertex_order, ReadingFrameTuple(s), vertex_len_dict, nvertices
     graph_info = genes_preprocess_all(graph_data, genetable.gene_to_cds_begin,
-                                      arg.parallel, arg.all_read_frames)
+                                      arg.parallel, arg.all_read_frames) #TODO: remove?
     end_time = timeit.default_timer()
     logging.info('\tTime spent: {:.3f} seconds'.format(end_time - start_time))
     print_memory_diags()
@@ -433,7 +453,7 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
                                                                  arg.complexity_cap, arg.disable_process_libsize,
                                                                  graph_data)
 
-    # parse output_sample relatively to output mode
+    # parse output_sample relatively to output mode: if no samples specified in arg, take all present in the countfile
     process_output_samples, output_samples_ids = parse_output_samples_choices(arg, countinfo, matching_count_ids,
                                                                               matching_count_samples)
 
@@ -490,7 +510,7 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
 
             logging.info("Finished traversal")
 
-        else:
+        else: # Not parallel
             logging.info('Not Parallel')
             # Build the background
             if (not arg.skip_annotation) and not arg.libsize_extract:
