@@ -457,8 +457,8 @@ def get_and_write_peptide_and_kmer(
     ref_mut_seq = get_mutated_sequence(fasta_file=ref_seq_file,
                                        chromosome=chrm,
                                        pos_start=gene.splicegraph.vertices.min(),
-                                       pos_end=max_pos,
-                                       mutation_dict=gene.splicegraph.vertices.max())
+                                       pos_end=gene.splicegraph.vertices.max(),
+                                       mutation_dict=mutation.germline_dict)
 
     # -------------- from get_and_write_peptide_and_kmer
     len_pep_save = 9999 # save at most this many peptides in the set before writing to file
