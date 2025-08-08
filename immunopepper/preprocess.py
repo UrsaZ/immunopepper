@@ -44,21 +44,21 @@ def genes_preprocess_batch(genes, gene_idxs, gene_cds_begin_dict, all_read_frame
         reading_frames = {}
         vertex_len_dict = {}
         if not all_read_frames:
-            for idx in vertex_order:
+            for idx in vertex_order: # iterate over the exons in translational order
                 reading_frames[idx] = set()
-                v_start = gene.splicegraph.vertices[0, idx]
-                v_stop = gene.splicegraph.vertices[1, idx]
-                cds_begins = find_overlapping_cds_simple(v_start, v_stop, gene_cds_begin_dict[gene.name], gene.strand)
-                vertex_len_dict[idx] = v_stop - v_start
+                v_start = gene.splicegraph.vertices[0, idx] # exon start
+                v_stop = gene.splicegraph.vertices[1, idx] # exon end
+                cds_begins = find_overlapping_cds_simple(v_start, v_stop, gene_cds_begin_dict[gene.name], gene.strand) # get a list of tuples for each annotated transcript
+                vertex_len_dict[idx] = v_stop - v_start # add exon len the dict
 
                 # Initialize reading regions from the CDS transcript annotations
                 for cds_begin in cds_begins:
-                    line_elems = cds_begin[2]
-                    cds_strand = line_elems[6]
+                    line_elems = cds_begin[2] # a list e.g. ['1', 'sim', 'CDS', '6061', '6980', '.', '+', '1', 'gene_id "gene10"; transcript_id "gene10.t1"; gene_type "protein_coding"; gene_name "gene10";']
+                    cds_strand = line_elems[6] # strand
                     assert (cds_strand == gene.strand)
                     cds_phase = int(line_elems[7])
-                    cds_left = int(line_elems[3])-1
-                    cds_right = int(line_elems[4])
+                    cds_left = int(line_elems[3])-1 # the same as cds_begin[0]
+                    cds_right = int(line_elems[4]) # cds stop, same as cds_begin[1]
 
                     # TODO: need to remove the redundance of (cds_start, cds_stop, item)
                     if gene.strand == "-":
@@ -142,7 +142,7 @@ def preprocess_ann(ann_path):
     Returns
     -------
     gene_table: NamedTuple.store the gene-transcript-cds mapping tables derived
-        from .gtf file. has attribute ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_cds']
+        from .gtf file. has attribute ['gene_to_cds_begin', 'ts_to_cds', 'gene_to_ts']
     chromosome_set: set. Store the chromosome naming.
     """
     transcript_to_gene_dict = {}    # transcript -> gene id
@@ -175,12 +175,13 @@ def preprocess_ann(ann_path):
             else:
                 gene_to_transcript_dict[gene_id] = [transcript_id]
 
-        # Todo python is 0-based while gene annotation file(.gtf, .vcf, .maf) is one based
+        #TODO: python is 0-based (half-open) while gene annotation file(.gtf, .vcf, .maf) is one based inclusive
         elif feature_type == "CDS":
             parent_ts = attribute_dict['transcript_id']
             strand_mode = item[6]
-            cds_left = int(item[3])-1
-            cds_right = int(item[4])
+            # cds_left and right will be START/STOP depending on the strand
+            cds_left = int(item[3])-1   # 1-based inclusive, need to modify to get 0-based inclusive
+            cds_right = int(item[4])    # inclusive in 1-based logic, so will be exclusive in 0-based --> OK
             frameshift = int(item[7])
             if parent_ts in transcript_to_cds_dict:
                 transcript_to_cds_dict[parent_ts].append((cds_left, cds_right, frameshift))
@@ -194,7 +195,7 @@ def preprocess_ann(ann_path):
             # we only consider the start of the whole CoDing Segment
             if parent_ts not in transcript_cds_begin_dict or \
                leq_strand(cds_start, transcript_cds_begin_dict[parent_ts][0], strand_mode):
-                transcript_cds_begin_dict[parent_ts] = (cds_start, cds_stop, item)
+                transcript_cds_begin_dict[parent_ts] = (cds_start, cds_stop, item) # unmodifeied (1-based) left and right coordinates added (inside item)
 
     # collect first CDS exons for all transcripts of a gene
     for ts_key in transcript_to_gene_dict:
