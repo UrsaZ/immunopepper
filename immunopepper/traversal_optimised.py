@@ -13,7 +13,7 @@ from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
 from immunopepper.mutations import get_mut_comb, get_mutated_sequence, mutation_to_seg_expression
 from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
 from immunopepper.utils import replace_I_with_L, get_segment_expr_kmer
-from immunopepper.preprocess import search_edge_metadata_segmentgraph_kmer
+from immunopepper.preprocess import search_edge_metadata_segmentgraph
 
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
@@ -425,7 +425,7 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
         # junction (edge) expression
         if (countinfo is not None) and not is_isolated:  # if there is countinfo and the kmer is not isolated (i.e., crosses junctions)
             #TODO: since junctions will repeatedly be calculated, it is better to do it once per gene??
-            _, edges_expr = search_edge_metadata_segmentgraph_kmer(gene, kmer, edge_idxs, edge_counts)
+            _, edges_expr = search_edge_metadata_segmentgraph(gene, kmer, edge_idxs, edge_counts)
 
             sublist_jun = np.nanmin(edges_expr, axis=0)  # always apply. The min has no effect if one junction only
             if graph_output_samples_ids is not None:

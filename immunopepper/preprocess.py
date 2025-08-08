@@ -256,7 +256,7 @@ def attribute_item_to_dict(a_item, file_type, feature_type):
     return gtf_dict
 
 # edge_idxs are segment, not exon junctions (based on test data)
-def search_edge_metadata_segmentgraph_kmer(gene, kmer_path, edge_idxs=None, edge_counts=None):
+def search_edge_metadata_segmentgraph(gene, kmer_path, edge_idxs=None, edge_counts=None):
     """
     Traverses a path of segments (kmer_path) and retrieves the expression counts for each junction (edge) 
     if it exists in the provided edge index and count arrays.
