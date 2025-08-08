@@ -3,6 +3,7 @@ from typing import List, Tuple, Dict, Set, Union, Optional
 import numpy as np
 import logging
 import itertools
+import timeit
 
 import spladder.classes.gene
 from immunopepper.dna_to_peptide import dna_to_peptide
@@ -11,7 +12,8 @@ from immunopepper.translate import complementary_seq, get_peptide_result
 from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
 from immunopepper.mutations import get_mut_comb, get_mutated_sequence, mutation_to_seg_expression
 from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
-from immunopepper.utils import replace_I_with_L
+from immunopepper.utils import replace_I_with_L, get_segment_expr_kmer
+from immunopepper.preprocess import search_edge_metadata_segmentgraph_kmer
 
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
@@ -410,24 +412,26 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
     kmer_matrix_edge = []
     kmer_matrix_segm = []
     # iterate over all the kmers for the gene
-    # output_kmers is a set of tuples (kmer_coord, kmer_peptide, rf_annot)
-    for kmer_coord, kmer_peptide, rf_annot in output_kmers:
-        k = len(kmer_peptide)
+    # output_kmers is a set of tuples (kmer_coord, kmer_peptide, rf_annot, is_isolated)
+    for kmer, kmer_peptide, rf_annot, is_isolated in output_kmers:
+        k = len(kmer_peptide) #TODO: will always be the same length right?
 
-        # segment expression
-        _, pos_expr_segm = get_segment_expr(gene, kmer_coord, countinfo, idx, seg_counts)
+        # get segment expression per segment per sample
+        _, pos_expr_segm = get_segment_expr_kmer(gene, kmer, countinfo, idx, seg_counts)
+        # calculate length-weighted expression per sample
         sublist_seg = np.round(np.atleast_2d(pos_expr_segm[:, 0]).dot(pos_expr_segm[:, 1:]) / (k * 3), 2)
         sublist_seg = sublist_seg[0].tolist()
 
-        # junction expression
-        if (countinfo is not None) and (kmer_coord.start_v2 is not np.nan):  # kmer crosses only one exon
-            _, edges_expr = search_edge_metadata_segmentgraph(gene, kmer_coord, edge_idxs, edge_counts)
+        # junction (edge) expression
+        if (countinfo is not None) and not is_isolated:  # if there is countinfo and the kmer is not isolated (i.e., crosses junctions)
+            #TODO: since junctions will repeatedly be calculated, it is better to do it once per gene??
+            _, edges_expr = search_edge_metadata_segmentgraph_kmer(gene, kmer, edge_idxs, edge_counts)
 
             sublist_jun = np.nanmin(edges_expr, axis=0)  # always apply. The min has no effect if one junction only
             if graph_output_samples_ids is not None:
                 sublist_jun = sublist_jun[graph_output_samples_ids]
             sublist_jun = sublist_jun.tolist()
-        else:
+        else: # isolated kmer, no junctions
             sublist_jun = []
 
         # Flags: check whether the kmer crosses junctions
@@ -550,9 +554,9 @@ def get_and_write_peptide_and_kmer(
     # Build an index of valid continuations from each segment
     index = build_segment_index(gene, exon_to_segments)
 
-    # Set to store final k-mers as tuples of (segment_id, start, end)
+    # Set to store seen k-mers as tuples of (segment_id, start, end)
     unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set()
-    # set to store: (kmer_coord, kmer_peptide, rf_annot)
+    # set to store final k-mers as tuples of (kmer_path, kmer_peptide, rf_annot)
     output_kmers = set()
     # Queue for k-mers to be propagated (list-like container with fast appends and pops on either end)
     queue: deque = deque()
@@ -579,9 +583,9 @@ def get_and_write_peptide_and_kmer(
                     # Remove peptides from a database on the fly
                     check_database = ((not kmer_database) or (replace_I_with_L(peptide.mut[0]) not in kmer_database))
                     if check_database: # add kmer_coord, kmer_peptide, rf_annot to the output_kmers set
-                        output_kmers.add((path_tuple, peptide.mut[0], None))  #TODO: None is read_frame_annotated, can be added later if needed#TODO: current code does not output multiple mutated peptides, as we only generate the actual RF
+                        output_kmers.add((path_tuple, peptide.mut[0], None, flag.is_isolated))  #TODO: None is read_frame_annotated, can be added later if needed#TODO: current code does not output multiple mutated peptides, as we only generate the actual RF
 
-            # if no STOP in the initial kmer, save to seen kmers and add to queue to propagate
+            # if at least one variant has no STOP, add to queue to propagate
             if has_any_valid_variant:
                 queue.append(path)
 
@@ -614,7 +618,7 @@ def get_and_write_peptide_and_kmer(
                     # Remove peptides from a database on the fly
                     check_database = ((not kmer_database) or (replace_I_with_L(peptide.mut[0]) not in kmer_database))
                     if check_database: # add kmer_coord, kmer_peptide, rf_annot to the output_kmers set
-                        output_kmers.add((path_tuple, peptide.mut[0], None))  #TODO: None is read_frame_annotated, can be added later if needed
+                        output_kmers.add((path_tuple, peptide.mut[0], None, flag.is_isolated))  #TODO: None is read_frame_annotated, can be added later if needed
 
                     if not flag.has_stop:  # if no STOP codon, propagate further
                         should_propagate = True
