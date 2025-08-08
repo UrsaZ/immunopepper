@@ -418,7 +418,7 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
 
         # get segment expression per segment per sample
         _, pos_expr_segm = get_segment_expr_kmer(gene, kmer, countinfo, idx, seg_counts)
-        # calculate length-weighted expression per sample
+        # calculate length-weighted expression per sample, order of segments is irrelevant here
         sublist_seg = np.round(np.atleast_2d(pos_expr_segm[:, 0]).dot(pos_expr_segm[:, 1:]) / (k * 3), 2)
         sublist_seg = sublist_seg[0].tolist()
 
@@ -427,9 +427,10 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
             #TODO: since junctions will repeatedly be calculated, it is better to do it once per gene??
             _, edges_expr = search_edge_metadata_segmentgraph(gene, kmer, edge_idxs, edge_counts)
 
+            # Get min expression value across all junctions for each sample
             sublist_jun = np.nanmin(edges_expr, axis=0)  # always apply. The min has no effect if one junction only
             if graph_output_samples_ids is not None:
-                sublist_jun = sublist_jun[graph_output_samples_ids]
+                sublist_jun = sublist_jun[graph_output_samples_ids] # filter by sample
             sublist_jun = sublist_jun.tolist()
         else: # isolated kmer, no junctions
             sublist_jun = []

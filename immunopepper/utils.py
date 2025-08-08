@@ -347,10 +347,7 @@ def get_segment_expr_kmer(gene, kmer_path, countinfo, seg_counts):
         out_shape = (seg_counts.shape[1] + 1) if len(seg_counts.shape) > 1 else 2
         expr_list = np.zeros((0, out_shape), dtype='float')
     
-    # Reverse expression list for negative strand to match translation order
-    if gene.strand == '-':
-        expr_list = expr_list[::-1]
-    
+    # Return expression list in translation order    
     return expr_meta_file, expr_list
 
 def get_total_gene_expr(gene, countinfo, seg_expr):
