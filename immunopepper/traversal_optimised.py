@@ -355,7 +355,7 @@ def process_peptide(
     kmer_coord_string = '_'.join(f'{seg}:{start}-{end}' for seg, start, end in kmer_path) #TODO: might be really long bc of genomic coordinates
     new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}"
 
-    # Junction list check (if any junction in the path is in the filter list)
+    # Junction list check (if any junction in the path is in the filter list) - translational order!
     is_intron_in_junction_list_flag = is_intron_in_junction_list(
         gene.splicegraph, kmer_path, gene.strand, junction_list)
 
@@ -401,6 +401,40 @@ def process_peptide(
 
     return variant_id + 1
 
+# TODO: test on real data
+def check_junction_annotation(kmer, gene, gene_annot_jx, junction_cache=None):
+    """Check if any junction (intron-separated segments) in the k-mer path is annotated.
+    gene_annot_jx is a set of junction strings in the format 'end_seg1:start_seg2'."""
+    # Sort k-mer by segment ID to get genomic order
+    sorted_kmer = sorted(kmer)
+    
+    for i in range(len(sorted_kmer) - 1):
+        seg_id1, seg_id2 = sorted_kmer[i][0], sorted_kmer[i + 1][0]
+        
+        # Use junction cache to check if junction exists
+        if junction_cache is not None:
+            junction_key = (seg_id1, seg_id2)
+            if junction_key in junction_cache:
+                # Junction exists, get coordinates in genomic order
+                seg_coord_list = gene.segmentgraph.segments
+                end_seg1 = seg_coord_list[1, seg_id1]      # End of first segment
+                start_seg2 = seg_coord_list[0, seg_id2]    # Start of second segment
+                
+                junction_str = f"{end_seg1}:{start_seg2}"
+                if junction_str in gene_annot_jx:
+                    return True
+        else:
+            # Fallback to direct matrix check for valid junctions
+            if gene.segmentgraph.seg_edges[seg_id1, seg_id2]:
+                seg_coord_list = gene.segmentgraph.segments
+                end_seg1 = seg_coord_list[1, seg_id1]
+                start_seg2 = seg_coord_list[0, seg_id2]
+                
+                junction_str = f"{end_seg1}:{start_seg2}"
+                if junction_str in gene_annot_jx:
+                    return True
+    return False
+
 def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_counts,
                                      output_kmers, gene_annot_jx,
                                      graph_output_samples_ids,
@@ -437,13 +471,8 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
         else: # isolated kmer, no junctions
             sublist_jun = []
 
-        # Flags: check whether junctions in the kmer are annotated
-        #TODO:check if junctions annotated where I check for is_isolated
-        if is_isolated:
-            junction_annotated = False  # isolated kmers cannot cross junctions
-        else:  # kmer crosses at least one junction, check if any of them is annotated
-            jx1 = ':'.join([ str(i) for i in np.sort(kmer[:4])[1:3]])
-            junction_annotated = jx1 in gene_annot_jx # set of {"exon1_end:exon2_start"} strings in genomic order
+        # Flags: check whether junctions (genomic order!) in the kmer are annotated
+        junction_annotated = False if is_isolated else check_junction_annotation(kmer, gene, gene_annot_jx, junction_cache=junction_cache)
 
         # create output data
         row_metadata = [kmer_peptide, ':'.join([str(coord) for coord in kmer_coord]),
@@ -537,7 +566,7 @@ def get_and_write_peptide_and_kmer(
     len_pep_save = 9999 # save at most this many peptides in the set before writing to file
 
     # check whether the junction (specific combination of vertices) also is annotated as a  junction of a protein coding transcript
-    # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"} appearing in any transcript given by .gtf file
+    # 1) return set of all the junctions pairs of a gene {"exon1_end:exon2_start"} in genomic order appearing in any transcript given by .gtf file
     gene_annot_jx = junctions_annotated(gene, table.gene_to_ts, table.ts_to_cds)
     # 2) get a dictionary mapping somatic mutation positions to segment expression data
     som_exp_dict = mutation_to_seg_expression(gene, list(mutation.somatic_dict.keys()), countinfo, seg_counts, mut_count_id) # return a dictionary mapping exon ids to expression data
