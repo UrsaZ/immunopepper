@@ -451,7 +451,7 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
     # iterate over all the kmers for the gene
     # output_kmers is a set of tuples (kmer_coord, kmer_peptide, rf_annot, is_isolated)
     for kmer, kmer_peptide, rf_annot, is_isolated in output_kmers:
-        k = len(kmer_peptide) #TODO: will always be the same length right?
+        k = len(kmer_peptide) #TODO: will always be the same length right or not? can stop shorten it?
 
         # get segment expression per segment per sample
         _, pos_expr_segm = get_segment_expr_kmer(gene, kmer, countinfo, idx, seg_counts)
@@ -475,9 +475,9 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
         junction_annotated = False if is_isolated else check_junction_annotation(kmer, gene, gene_annot_jx, junction_cache=junction_cache)
 
         # create output data
-        row_metadata = [kmer_peptide, ':'.join([str(coord) for coord in kmer_coord]),
+        row_metadata = [kmer_peptide, ':'.join([f'{start}:{end}' for seg_id, start, end in kmer]),
                         is_isolated, junction_annotated, rf_annot]
-        if is_in_junction:
+        if not is_isolated:  # if the kmer crosses junctions, save it in the edge matrix
             kmer_matrix_edge.append(row_metadata + sublist_jun)
         else:
             kmer_matrix_segm.append(row_metadata + sublist_seg)
@@ -657,7 +657,6 @@ def get_and_write_peptide_and_kmer(
     if not gene.splicegraph.edges is None:
         gene.to_sparse()
                 
-    #TODO: continue from here
     prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_counts,
                             output_kmers, gene_annot_jx,
                             graph_output_samples_ids,
