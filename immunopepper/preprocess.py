@@ -255,95 +255,115 @@ def attribute_item_to_dict(a_item, file_type, feature_type):
 
     return gtf_dict
 
-# edge_idxs are segment, not exon junctions (based on test data)
-def search_edge_metadata_segmentgraph(gene, kmer_path, edge_idxs=None, edge_counts=None):
+
+def precompute_gene_junction_expressions(gene, edge_idxs, edge_counts):
+    """Pre-compute expression for all junctions in a gene.
+    Returns a dictionary where keys are tuples of segment IDs (seg_id1, seg_id2)
+    and values are the expression counts for the junction between those segments."""
+    junction_cache = {}
+    
+    if edge_idxs is None or edge_counts is None:
+        return junction_cache
+        
+    segmentgraph = gene.segmentgraph
+    
+    # Get all valid junctions from seg_edges matrix
+    for seg_id1 in range(segmentgraph.seg_edges.shape[0]):
+        for seg_id2 in range(seg_id1 + 1, segmentgraph.seg_edges.shape[1]):
+            if segmentgraph.seg_edges[seg_id1, seg_id2]:
+                junction_expr = get_segmentgraph_edge_expr_kmer(seg_id1, seg_id2, segmentgraph, edge_idxs, edge_counts)
+                if junction_expr is not None:
+                    junction_cache[(seg_id1, seg_id2)] = junction_expr
+    
+    return junction_cache
+
+def get_segmentgraph_edge_expr_kmer(seg_id1, seg_id2, segmentgraph, edge_idxs, edge_counts):
+    """
+    Retrieve the expression counts for a specific edge (junction) between two segments.
+    
+    Parameters
+    ----------
+    seg_id1, seg_id2 : int
+        Segment IDs (order doesn't matter, function handles upper triangular matrix)
+    segmentgraph : Object
+        Gene segment graph with seg_edges attribute
+    edge_idxs : np.ndarray
+        Array of flattened indices representing valid edges
+    edge_counts : np.ndarray
+        Array of expression counts for each edge
+    
+    Returns
+    -------
+    np.ndarray or None
+        Expression counts for the junction, or None if junction doesn't exist
+    """
+    # Ensure seg_id1 < seg_id2 for upper triangular matrix
+    if seg_id1 > seg_id2:
+        seg_id1, seg_id2 = seg_id2, seg_id1
+
+    # Check the segments are connected by an intron (the junction exists)
+    if not segmentgraph.seg_edges[seg_id1, seg_id2]:
+        return None  # No junction between these segments
+    
+    # Create junction index in the segment graph edge matrix (idx is the value found in edge_idxs)
+    idx = np.ravel_multi_index([seg_id1, seg_id2], segmentgraph.seg_edges.shape)
+    
+    # Find this junction in the edge_idxs array (find the position for the value in edge_idxs)
+    cidx = np.searchsorted(edge_idxs, idx)
+    
+    # Validate that we found the correct edge
+    if cidx >= len(edge_idxs) or edge_idxs[cidx] != idx:
+        return None  # Edge not found in expression data
+    
+    # Extract expression counts
+    if len(edge_counts.shape) > 1:
+        counts = edge_counts[cidx, :]  # Multi-sample case
+    else:
+        counts = np.array([edge_counts[cidx]])  # Single sample case
+        
+    return counts
+
+def search_edge_metadata_segmentgraph(gene, kmer_path, edge_idxs=None, edge_counts=None, junction_cache=None):
     """
     Traverses a path of segments (kmer_path) and retrieves the expression counts for each junction (edge) 
-    if it exists in the provided edge index and count arrays.
-
-    Args:
-        gene: An object representing a gene, expected to have a 'segmentgraph' attribute.
-        kmer_path (list): A list of tuples or identifiers representing the path of segments (k-mers) to traverse.
-        edge_idxs (np.ndarray, optional): Array of flattened indices representing valid edges (junctions) in the segment graph.
-        edge_counts (np.ndarray, optional): Array of expression counts for each edge, shape (num_edges, num_samples) or (num_edges,).
-            both from the SplAdder count file ['edges'] and ['edge_idx'].
-    Returns:
-        tuple:
-            - edges_res_metafile (float or np.nan): Placeholder for edge metadata file (currently unused, always np.nan).
-            - edges_res (np.ndarray): Array of expression counts for the junctions found along the k-mer path.
-              Shape is (num_junctions_found, num_samples) or (0, num_samples) if no junctions are found.
+    using pre-computed junction cache when available.
     """
     
-    def get_segmentgraph_edge_expr_kmer(seg_id1, seg_id2, segmentgraph, edge_idxs, edge_counts):
-        """
-        Retrieve the expression counts for a specific edge (junction) between two segments in a segment graph.
-        Args:
-            seg_id1 (int): The ID of the first segment (source).
-            seg_id2 (int): The ID of the second segment (target).
-            segmentgraph: An object representing the segment graph, expected to have a 'seg_edges' attribute (2D array-like).
-            edge_idxs (np.ndarray): 1D array of flattened indices representing valid edges in the segment graph.
-            edge_counts (np.ndarray): Array of expression counts for each edge. Can be 1D (single sample) or 2D (multi-sample).
-        Returns:
-            np.ndarray or None: The expression counts for the specified edge as a 1D array (length = number of samples),
-            or None if the edge does not exist or is not found in the expression data.
-        """
-
-        # Check the segments are connected by an intron (the junction exists)
-        if not segmentgraph.seg_edges[seg_id1, seg_id2]:
-            return None  # No junction between these segments
-        
-        # Create junction index in the segment graph edge matrix (idx is the value found in edge_idxs)
-        idx = np.ravel_multi_index([seg_id1, seg_id2], segmentgraph.seg_edges.shape)
-        
-        # Find this junction in the edge_idxs array (find the position for the value in edge_idxs)
-        cidx = np.searchsorted(edge_idxs, idx)
-        
-        # Validate that we found the correct edge
-        if cidx >= len(edge_idxs) or edge_idxs[cidx] != idx:
-            return None  # Edge not found in expression data
-        
-        # Extract expression counts
-        if len(edge_counts.shape) > 1:
-            counts = edge_counts[cidx, :]  # Multi-sample case
-        else:
-            counts = np.array([edge_counts[cidx]])  # Single sample case
-            
-        return counts
-
     edges_res_metafile = np.nan
     
-    # Handle cases where we don't have junction data
-    if edge_idxs is None or edge_counts is None or len(kmer_path) < 2:
+    # Handle cases where we don't have junction data or k-mer path is too short
+    if ((edge_idxs is None or edge_counts is None) and junction_cache is None) or len(kmer_path) < 2:
         # Return empty array with appropriate shape
         out_shape = edge_counts.shape[1] if (edge_counts is not None and len(edge_counts.shape) > 1) else 1
         return edges_res_metafile, np.zeros((0, out_shape), dtype='float')
     
-    segmentgraph = gene.segmentgraph
     junction_expressions = []
-    kmer_path = sorted(kmer_path) # reverse order to  gurantee correct matrix indexing for both strands
+    kmer_path = sorted(kmer_path)  # Sort to guarantee correct matrix indexing
     
     # Process each potential junction in the k-mer path
     for i in range(len(kmer_path) - 1):
         seg_id1 = kmer_path[i][0]      # Current segment ID
         seg_id2 = kmer_path[i + 1][0]  # Next segment ID
         
-        # Get expression for this junction (if it exists)
-        junction_expr = get_segmentgraph_edge_expr_kmer(seg_id1, seg_id2, segmentgraph, edge_idxs, edge_counts)
-        
-        # Only add if there's an actual junction
-        if junction_expr is not None:
-            junction_expressions.append(junction_expr)
+        # Use pre-computed cache if available
+        if junction_cache is not None:
+            if (seg_id1, seg_id2) in junction_cache:
+                junction_expressions.append(junction_cache[(seg_id1, seg_id2)])
+        else:
+            # Fallback to original method
+            junction_expr = get_segmentgraph_edge_expr_kmer(seg_id1, seg_id2, gene.segmentgraph, edge_idxs, edge_counts)
+            if junction_expr is not None:
+                junction_expressions.append(junction_expr)
     
     # Stack all junction expressions
     if junction_expressions:
         edges_res = np.stack(junction_expressions)
     else:
-        # No junctions found - k-mer spans only adjacent segments in same exon
-        out_shape = edge_counts.shape[1] if len(edge_counts.shape) > 1 else 1
+        # No junctions found
+        out_shape = edge_counts.shape[1] if (edge_counts is not None and len(edge_counts.shape) > 1) else 1
         edges_res = np.zeros((0, out_shape), dtype='float')
     
     return edges_res_metafile, edges_res
-
 
 def parse_gene_metadata_info(h5fname, sample_list):
     """ Parse the count file

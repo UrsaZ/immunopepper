@@ -13,7 +13,7 @@ from immunopepper.filter import is_intron_in_junction_list, junctions_annotated
 from immunopepper.mutations import get_mut_comb, get_mutated_sequence, mutation_to_seg_expression
 from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
 from immunopepper.utils import replace_I_with_L, get_segment_expr_kmer
-from immunopepper.preprocess import search_edge_metadata_segmentgraph
+from immunopepper.preprocess import search_edge_metadata_segmentgraph, precompute_gene_junction_expressions
 
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
@@ -401,7 +401,6 @@ def process_peptide(
 
     return variant_id + 1
 
-#TODO: modify, coordinates are not Coords objects, but tuples (seg_id, start, end)
 def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_counts,
                                      output_kmers, gene_annot_jx,
                                      graph_output_samples_ids,
@@ -411,6 +410,10 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
     """
     kmer_matrix_edge = []
     kmer_matrix_segm = []
+
+    # Pre-compute junction expressions for this gene
+    junction_cache = precompute_gene_junction_expressions(gene, edge_idxs, edge_counts)
+
     # iterate over all the kmers for the gene
     # output_kmers is a set of tuples (kmer_coord, kmer_peptide, rf_annot, is_isolated)
     for kmer, kmer_peptide, rf_annot, is_isolated in output_kmers:
@@ -424,8 +427,7 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
 
         # junction (edge) expression
         if (countinfo is not None) and not is_isolated:  # if there is countinfo and the kmer is not isolated (i.e., crosses junctions)
-            #TODO: since junctions will repeatedly be calculated, it is better to do it once per gene??
-            _, edges_expr = search_edge_metadata_segmentgraph(gene, kmer, edge_idxs, edge_counts)
+            _, edges_expr = search_edge_metadata_segmentgraph(gene, kmer, edge_idxs, edge_counts, junction_cache=junction_cache)
 
             # Get min expression value across all junctions for each sample
             sublist_jun = np.nanmin(edges_expr, axis=0)  # always apply. The min has no effect if one junction only
@@ -435,21 +437,17 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
         else: # isolated kmer, no junctions
             sublist_jun = []
 
-        # Flags: check whether the kmer crosses junctions
-        if kmer_coord.start_v2 is np.nan:  # kmer crosses only one exon
-            is_in_junction = False
-            junction_annotated = False
-        else:  # kmer crosses at least one junction
-            is_in_junction = True
-            jx1 = ':'.join([ str(i) for i in np.sort(kmer_coord[:4])[1:3]])
-            junction_annotated = jx1 in gene_annot_jx
-            if kmer_coord.start_v3 is not None:
-                jx2 = ':'.join([str(i) for i in np.sort(kmer_coord[2:])[1:3]])
-                junction_annotated = (jx1 in gene_annot_jx) or (jx2 in gene_annot_jx)
+        # Flags: check whether junctions in the kmer are annotated
+        #TODO:check if junctions annotated where I check for is_isolated
+        if is_isolated:
+            junction_annotated = False  # isolated kmers cannot cross junctions
+        else:  # kmer crosses at least one junction, check if any of them is annotated
+            jx1 = ':'.join([ str(i) for i in np.sort(kmer[:4])[1:3]])
+            junction_annotated = jx1 in gene_annot_jx # set of {"exon1_end:exon2_start"} strings in genomic order
 
         # create output data
         row_metadata = [kmer_peptide, ':'.join([str(coord) for coord in kmer_coord]),
-                        is_in_junction, junction_annotated, rf_annot]
+                        is_isolated, junction_annotated, rf_annot]
         if is_in_junction:
             kmer_matrix_edge.append(row_metadata + sublist_jun)
         else:
@@ -576,7 +574,7 @@ def get_and_write_peptide_and_kmer(
 
             # iterate over all the somatic mutation combinations and apply them to the reference sequence
             for variant_comb in mut_seq_comb:
-                kmer, peptide, flag = get_peptide_result(path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+                peptide, flag = get_peptide_result(path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
                 
                 if not flag.has_stop:
                     has_any_valid_variant = True
@@ -614,7 +612,7 @@ def get_and_write_peptide_and_kmer(
 
                 # iterate over all the somatic mutation combinations
                 for variant_comb in mut_seq_comb:
-                    kmer, peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
+                    peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
 
                     # Remove peptides from a database on the fly
                     check_database = ((not kmer_database) or (replace_I_with_L(peptide.mut[0]) not in kmer_database))
