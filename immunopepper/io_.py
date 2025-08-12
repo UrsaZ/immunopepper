@@ -68,7 +68,7 @@ def decode_utf8(s):
     return s.decode('utf-8') if hasattr(s, 'decode') else s
 
 
-def get_save_path(file_info: dict, out_dir: str = None,  create_partitions: bool = False, tag: str = ''):
+def get_save_path(file_info: dict, out_dir: str = None,  create_partitions: bool = False, tag: str = '', prefix: str = ''):
     """ Parse the path stored by the filepointer depending on:
     - the nesting level of the filepointer
     - the use of a batch directory
@@ -93,6 +93,8 @@ def get_save_path(file_info: dict, out_dir: str = None,  create_partitions: bool
     if create_partitions:
         if tag:
             path = os.path.join(path, f'part-{tag}.gz')
+        elif prefix:
+            path = os.path.join(path, f'{prefix}-part-{str(uuid4())}.gz')
         else:
             path = os.path.join(path, f'part-{str(uuid4())}.gz')
 
@@ -180,7 +182,7 @@ def save_gene_expr_distr(data: list[list], input_samples: list[str], process_sam
 
 
 def save_kmer_matrix(data_edge, data_segm, graph_samples, filepointer: Filepointer,
-                     out_dir: str = None, verbose: bool = False):
+                     out_dir: str = None, verbose: bool = False, gene_name: str = None):
     """
     Saves matrices of [kmers] x [metadata, samples] containing either segment expression or junction expression
     :param data_edge: set of tuples: (kmer, is_junction, junction_is_annotated, reading_frame_is_annotated, edge_expression_sample_i ...)
@@ -191,8 +193,10 @@ def save_kmer_matrix(data_edge, data_segm, graph_samples, filepointer: Filepoint
     :param out_dir: str output directory path
     :param verbose: int verbose parameter
     """
-    segm_path = get_save_path(filepointer.kmer_segm_expr_fp, out_dir, create_partitions=True)
-    edge_path = get_save_path(filepointer.kmer_edge_expr_fp, out_dir, create_partitions=True)
+    filename_prefix = f"{gene_name}" if gene_name else ""
+
+    segm_path = get_save_path(filepointer.kmer_segm_expr_fp, out_dir, create_partitions=True, prefix=filename_prefix)
+    edge_path = get_save_path(filepointer.kmer_edge_expr_fp, out_dir, create_partitions=True, prefix=filename_prefix)
     if data_edge:
         data_edge_columns = filepointer.kmer_segm_expr_fp['columns'] + graph_samples
         filepointer.kmer_edge_expr_fp['pqwriter'] = save_to_gzip(edge_path, data_edge, data_edge_columns,

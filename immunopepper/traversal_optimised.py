@@ -325,7 +325,6 @@ def get_segments_to_exons_dict(exon_to_segments: dict) -> dict:
             segment_to_exons[s].add(exon)
     return segment_to_exons
 
-#FIXME: outputs False even when True
 def check_junction_annotation(kmer, gene, gene_annot_jx, junction_cache=None):
     """Check if any junction (intron-separated segments) in the k-mer path is annotated.
     gene_annot_jx is a set of junction strings in the format 'end_seg1:start_seg2'."""
@@ -410,17 +409,17 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
         if len(kmer_matrix_segm) > 5000:
             print(f'storing batch of {len(kmer_matrix_segm)} kmer_matrix_segm')
             time = timeit.default_timer()
-            save_kmer_matrix(None, kmer_matrix_segm, graph_samples, filepointer, out_dir, verbose=False)
+            save_kmer_matrix(None, kmer_matrix_segm, graph_samples, filepointer, out_dir, verbose=False, gene_name=gene.name)
             print(f'done - took {timeit.default_timer() - time} seconds')
             kmer_matrix_segm.clear()
         if len(kmer_matrix_edge) > 5000:
             print(f'storing batch of {len(kmer_matrix_edge)} kmer_matrix_edge')
             time = timeit.default_timer()
-            save_kmer_matrix(kmer_matrix_edge, None, graph_samples, filepointer, out_dir, verbose)
+            save_kmer_matrix(kmer_matrix_edge, None, graph_samples, filepointer, out_dir, verbose, gene_name=gene.name)
             print(f'done - took {timeit.default_timer() - time} seconds')
             kmer_matrix_edge.clear()
 
-    save_kmer_matrix(kmer_matrix_edge, kmer_matrix_segm, graph_samples, filepointer, out_dir, verbose=False)
+    save_kmer_matrix(kmer_matrix_edge, kmer_matrix_segm, graph_samples, filepointer, out_dir, verbose=False, gene_name=gene.name)
 
 def get_and_write_kmer(
     gene: spladder.classes.gene.Gene,
