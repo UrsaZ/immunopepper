@@ -55,7 +55,7 @@ from immunopepper.utils import create_libsize
 from immunopepper.utils import get_idx
 from immunopepper.utils import get_total_gene_expr
 from immunopepper.utils import print_memory_diags
-from immunopepper.traversal_optimised import None
+from immunopepper.traversal_optimised import get_kmers_and_peptides
 
 
 # intermediate fix to load pickle files stored under previous version
@@ -286,56 +286,29 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
             if arg.output_fasta:
                 pathlib.Path(get_save_path(filepointer.junction_peptide_fp, outbase)).mkdir(exist_ok=True, parents=True)
 
-#TODO: START HERE -----------------------------------------------------------------------------------------------------
-
-            # Traverse the splice graph for the gene to collect valid vertex pairs and sequences
-            # considering mutations and frames.
-            vertex_pairs, \
-            ref_mut_seq, \
-            exon_som_dict = collect_vertex_pairs(gene=gene,
-                                                 gene_info=genes_info[i],
-                                                 ref_seq_file=arg.ref_path,
-                                                 chrm=chrm,
-                                                 idx=idx,
-                                                 mutation=sub_mutation,
-                                                 all_read_frames=all_read_frames,
-                                                 disable_concat=arg.disable_concat,
-                                                 kmer_length=arg.kmer,
-                                                 filter_redundant=arg.filter_redundant)
-            # Main function to generate peptides and kmers from vertex pairs and write results,
-            # including accounting for mutations, expression counts, and outputs.
-            get_and_write_peptide_and_kmer(peptide_set=set_pept_forgrd,
-                                           gene=gene,
-                                           all_vertex_pairs=vertex_pairs,
-                                           ref_mut_seq=ref_mut_seq,
-                                           idx=idx,
-                                           exon_som_dict=exon_som_dict,
-                                           countinfo=countinfo,
-                                           mutation=sub_mutation,
-                                           mut_count_id=mut_count_id,
-                                           table=genetable,
-                                           junction_list=junction_list,
-                                           kmer_database=kmer_database,
-                                           kmer=arg.kmer,
-                                           force_ref_peptides=arg.force_ref_peptides,
-                                           out_dir=outbase,
-                                           edge_idxs=edge_idxs,
-                                           edge_counts=edge_counts,
-                                           seg_counts=seg_counts,
-                                           all_read_frames=arg.all_read_frames,
-                                           filepointer=filepointer,
-                                           graph_output_samples_ids=output_samples_ids,
-                                           graph_samples=arg.output_samples,
-                                           verbose_save=verbose,
-                                           fasta_save=arg.output_fasta,
-                                           gene_info=genes_info[i],
-                                           ref_seq_file=arg.ref_path,
-                                           chrm=chrm,
-                                           disable_concat=arg.disable_concat,
-                                           kmer_length=arg.kmer,
-                                           filter_redundant=arg.filter_redundant)
-
-#TODO: END -----------------------------------------------------------------------------------------------------
+            get_kmers_and_peptides(gene=gene,
+                                    mutation=sub_mutation,
+                                    table=genetable,
+                                    ref_seq_file=arg.ref_path,
+                                    chrm=chrm,
+                                    peptide_set=set_pept_forgrd,
+                                    kmer_length=27,
+                                    pep_length=999,
+                                    idx=idx,
+                                    countinfo=countinfo,
+                                    edge_idxs=edge_idxs,
+                                    edge_counts=edge_counts,
+                                    seg_counts=seg_counts,
+                                    mut_count_id=mut_count_id,
+                                    junction_list=junction_list,
+                                    kmer_database=kmer_database,
+                                    filepointer=filepointer,
+                                    force_ref_peptides=arg.force_ref_peptides,
+                                    graph_output_samples_ids=output_samples_ids,
+                                    graph_samples=arg.output_samples,
+                                    out_dir=outbase,
+                                    verbose_save=verbose,
+                                    fasta_save=arg.output_fasta)                
 
             time_per_gene.append(timeit.default_timer() - start_time)
             mem_per_gene.append(print_memory_diags(disable_print=True))
