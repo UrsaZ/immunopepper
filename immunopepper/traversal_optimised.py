@@ -325,7 +325,7 @@ def get_segments_to_exons_dict(exon_to_segments: dict) -> dict:
             segment_to_exons[s].add(exon)
     return segment_to_exons
 
-# TODO: test on real data
+#FIXME: outputs False even when True
 def check_junction_annotation(kmer, gene, gene_annot_jx, junction_cache=None):
     """Check if any junction (intron-separated segments) in the k-mer path is annotated.
     gene_annot_jx is a set of junction strings in the format 'end_seg1:start_seg2'."""
@@ -378,7 +378,7 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
         k = len(kmer_peptide) #TODO: will always be the same length right or not? can stop shorten it?
 
         # get segment expression per segment per sample
-        _, pos_expr_segm = get_segment_expr_kmer(gene, kmer, countinfo, idx, seg_counts)
+        _, pos_expr_segm = get_segment_expr_kmer(gene, kmer, countinfo, seg_counts)
         # calculate length-weighted expression per sample, order of segments is irrelevant here
         sublist_seg = np.round(np.atleast_2d(pos_expr_segm[:, 0]).dot(pos_expr_segm[:, 1:]) / (k * 3), 2)
         sublist_seg = sublist_seg[0].tolist()
@@ -400,7 +400,7 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
 
         # create output data
         row_metadata = [kmer_peptide, ':'.join([f'{start}:{end}' for seg_id, start, end in kmer]),
-                        is_isolated, junction_annotated, rf_annot]
+                        not is_isolated, junction_annotated, rf_annot]
         if not is_isolated:  # if the kmer crosses junctions, save it in the edge matrix
             kmer_matrix_edge.append(row_metadata + sublist_jun)
         else:
