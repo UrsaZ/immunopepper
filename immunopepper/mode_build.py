@@ -177,7 +177,7 @@ def process_gene_batch_background(output_sample, mutation_sample, genes, gene_id
 
 
 def process_gene_batch_foreground(output_sample, mutation_sample, output_samples_ids, genes,
-                                  genes_info, gene_idxs, n_genes, genes_interest, disable_process_libsize,
+                                  gene_idxs, n_genes, genes_interest, disable_process_libsize,
                                   all_read_frames, complexity_cap, mutation, junction_dict,
                                   arg, outbase, filepointer, verbose):
     """
@@ -474,7 +474,7 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
             logging.info(">>>>>>>>> Start Foreground processing")
             with Pool(processes=arg.parallel, initializer=pool_initializer_glob, initargs=(countinfo, genetable, kmer_database)) as pool:
                 args = [(output_sample, arg.mutation_sample, output_samples_ids, graph_data[gene_idx],
-                         graph_info[gene_idx], gene_idx, n_genes, genes_interest, disable_process_libsize,
+                         gene_idx, n_genes, genes_interest, disable_process_libsize,
                          arg.all_read_frames, complexity_cap, mutation, junction_dict, arg,
                          os.path.join(output_path, f'tmp_out_{mutation.mode}_batch_{i + arg.start_id}'),
                          filepointer, verbose_save) for i, gene_idx in gene_batches]
@@ -494,7 +494,7 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
             # Build the foreground and remove the background if needed
             logging.info(">>>>>>>>> Start Foreground processing")
             process_gene_batch_foreground(output_sample, arg.mutation_sample, output_samples_ids, graph_data,
-                                          graph_info, genes_range, n_genes, genes_interest, disable_process_libsize,
+                                          genes_range, n_genes, genes_interest, disable_process_libsize,
                                           arg.all_read_frames, complexity_cap, mutation, junction_dict,
                                           arg, output_path, filepointer,
                                           verbose=True)
