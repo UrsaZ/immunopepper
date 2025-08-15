@@ -503,13 +503,13 @@ def get_and_write_kmer(
                 for variant_comb in mut_seq_comb:
                     peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
 
-                    # Remove peptides from a database on the fly
-                    check_database = ((not kmer_database) or (replace_I_with_L(peptide.mut[0]) not in kmer_database))
-                    if check_database: # add kmer_coord, kmer_peptide, rf_annot to the output_kmers set
-                        output_kmers.add((path_tuple, peptide.mut[0], None, flag.is_isolated))  #TODO: None is read_frame_annotated, can be added later if needed
-
                     if not flag.has_stop:  # if no STOP codon, propagate further
                         should_propagate = True
+                    
+                        # Remove peptides from a database on the fly
+                        check_database = ((not kmer_database) or (replace_I_with_L(peptide.mut[0]) not in kmer_database))
+                        if check_database: # add kmer_coord, kmer_peptide, rf_annot to the output_kmers set
+                            output_kmers.add((path_tuple, peptide.mut[0], None, flag.is_isolated))  #TODO: None is read_frame_annotated, can be added later if needed
 
                 if should_propagate: # if at least one of the mutated sequences has no STOP codon
                     queue.append(new_path)  # no stop codon → continue propagating
