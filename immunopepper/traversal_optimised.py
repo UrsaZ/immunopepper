@@ -199,11 +199,12 @@ def build_initial_kmers(cds_starts: List[int],
 def propagate_kmer(kmer: List[Tuple[int, int, int]],
                    segment_coords: np.ndarray,
                    strand: str,
-                   index: SegmentPathIndex) -> List[List[Tuple[int, int, int]]]:
+                   index: SegmentPathIndex,
+                   step: int = 3) -> List[List[Tuple[int, int, int]]]:
     """
-    Propagate a k-mer (always 27nt) forward by 3 nt, respecting strand and valid segment paths.
+    Propagate a k-mer (always 27nt) forward by step (def. 3 nt), respecting strand and valid segment paths.
     
-    If 3 nt can't be added from the current segment, extend recursively through multiple
+    If step nt can't be added from the current segment, extend recursively through multiple
     valid child segments using index paths. If no child segments are available, the output will be an empty list.
 
     Args:
@@ -211,6 +212,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         segment_coords: 2 x N array with genomic coordinates of segments (start, end). gene.segmentgraph.segments
         strand: '+' or '-' indicating direction
         index: A SegmentPathIndex with valid segment continuations
+        step: number of nucleotides by which to propagate a kmer in each step (default 3)
 
     Returns:
         A list of new propagated k-mers (as lists of (segment_id, start, end))
@@ -220,17 +222,17 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
     # Extract the segment path (list of segment IDs order)
     seg_path = [seg_id for seg_id, _, _ in kmer]
 
-    # ----------- Step 1: Trim 3 nt from the front -----------
+    # ----------- Step 1: Trim 3 nt (step) from the front -----------
     head_seg_id, head_start, head_end = kmer[0]
     head_len = head_end - head_start
 
-    if head_len > 3:
+    if head_len > step:
         # Just advance start of first segment
         if strand == '+':
-            new_head = (head_seg_id, head_start + 3, head_end)
+            new_head = (head_seg_id, head_start + step, head_end)
         else: 
-        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 from the last el.
-            new_head = (head_seg_id, head_start, head_end - 3)
+        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 (step) from the last el.
+            new_head = (head_seg_id, head_start, head_end - step)
         trimmed_kmer = [new_head] + kmer[1:] # update the 1st segment
         new_seg_path = seg_path
     else:
@@ -240,9 +242,9 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         if not trimmed_kmer:
             return []  # Nothing left after trimming
 
-        # Adjust the new head segment by 3 - head_len nt
+        # Adjust the new head segment by 3 (step) - head_len nt
         next_seg_id, next_start, next_end = trimmed_kmer[0]
-        advance = 3 - head_len # how much is left after subtracting from the 1st segment
+        advance = step - head_len # how much is left after subtracting from the 1st segment
         if strand == '+':
             new_head = (next_seg_id, next_start + advance, next_end)
         else:
@@ -250,18 +252,18 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
 
         trimmed_kmer[0] = new_head
         
-    # ----------- Step 2: Extend 3 nt at the back -----------
+    # ----------- Step 2: Extend 3 nt (step) at the back -----------
     tail_seg_id, tail_start, tail_end = trimmed_kmer[-1]
     seg_start, seg_end = segment_coords[:, tail_seg_id]
 
     if strand == '+':
         seg_limit = seg_end
         remaining = seg_limit - tail_end # how much can we take from the current segment
-        if remaining >= 3: # enough space to propagate in the current segment
-            new_tail = (tail_seg_id, tail_start, tail_end + 3)
+        if remaining >= step: # enough space to propagate in the current segment
+            new_tail = (tail_seg_id, tail_start, tail_end + step)
             new_paths.append(trimmed_kmer[:-1] + [new_tail])
         else:
-            to_fill = 3 - remaining # how much will be taken from the next segment(s)
+            to_fill = step - remaining # how much will be taken from the next segment(s)
             base_path = trimmed_kmer
             if remaining > 0:
                 tail_piece = (tail_seg_id, tail_start, tail_end + remaining)
@@ -284,14 +286,14 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
             extend_forward(base_path, new_seg_path, to_fill)
 
     else:  
-        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 from the 2nd el.
+        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 (step) from the 2nd el.
         seg_limit = seg_start
         remaining = tail_start - seg_limit
-        if remaining >= 3: # enough space to propagate in the current segment
-            new_tail = (tail_seg_id, tail_start - 3, tail_end)
+        if remaining >= step: # enough space to propagate in the current segment
+            new_tail = (tail_seg_id, tail_start - step, tail_end)
             new_paths.append(trimmed_kmer[:-1] + [new_tail])
         else: # not enough space in the current segment, need to go to the next one
-            to_fill = 3 - remaining # how much will be taken from the next segment(s)
+            to_fill = step - remaining # how much will be taken from the next segment(s)
             base_path = trimmed_kmer
             if remaining > 0:
                 tail_piece = (tail_seg_id, tail_start - remaining, tail_end)
@@ -422,26 +424,26 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
     save_kmer_matrix(kmer_matrix_edge, kmer_matrix_segm, graph_samples, filepointer, out_dir, verbose=False, gene_name=gene.name)
 
 def get_and_write_kmer(
-    gene: spladder.classes.gene.Gene,
-    index: SegmentPathIndex,
-    cds_starts: List[int],
-    ref_mut_seq: str,
-    segment_to_exons: dict,
-    gene_annot_jx: set,
-    mutation: object,
-    kmer_length: int,
-    idx: object = None,
-    countinfo: object = None,
-    edge_idxs: object = None,
-    edge_counts: object = None,
-    seg_counts: object = None,
-    kmer_database: set = None,
-    filepointer: object = None,
-    graph_output_samples_ids: object = None,
-    graph_samples: object = None,
-    out_dir: str = None,
-    verbose_save: bool = False,
-) -> None:
+        gene: spladder.classes.gene.Gene,
+        index: SegmentPathIndex,
+        cds_starts: List[int],
+        ref_mut_seq: str,
+        segment_to_exons: dict,
+        gene_annot_jx: set,
+        mutation: object,
+        kmer_length: int,
+        idx: object = None,
+        countinfo: object = None,
+        edge_idxs: object = None,
+        edge_counts: object = None,
+        seg_counts: object = None,
+        kmer_database: set = None,
+        filepointer: object = None,
+        graph_output_samples_ids: object = None,
+        graph_samples: object = None,
+        out_dir: str = None,
+        verbose_save: bool = False,
+    ) -> None:
 
     # k-mer path is a tuple of (segment_id, start, end)
     unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set() # set to store seen kmer-paths
@@ -480,9 +482,9 @@ def get_and_write_kmer(
     while queue: # While there are k-mers to propagate
         current_path = queue.popleft() # Remove and return a k-mer from the left side
         
-        # Try to advance by 3 nt (--> 1 aa)
+        # Try to advance by step: 3 nt (--> 1 aa) 
         # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index)
+        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, step=3)
 
         # iterate over all possible next kmers
         for new_path in new_paths:
@@ -529,6 +531,7 @@ def get_and_write_peptide(
         som_exp_dict: dict,
         peptide_set: set,
         pep_length: int = 1000,
+        pep_step: int = 50,
         junction_list: set = None,
         filepointer: object = None,
         force_ref_peptides: bool = False,
@@ -611,9 +614,9 @@ def get_and_write_peptide(
     while queue: # While there are k-mers to propagate
         current_path = queue.popleft() # Remove and return a k-mer from the left side
         
-        # Try to advance by 3 nt (--> 1 aa)
+        # Try to advance by step: 3 nt (--> 1 aa)
         # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index)
+        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, pep_step)
 
         # iterate over all possible next kmers
         for new_path in new_paths:
@@ -687,29 +690,29 @@ def get_and_write_peptide(
     return
 
 def get_kmers_and_peptides(
-    gene: spladder.classes.gene.Gene,
-    mutation: object,
-    table: object,
-    ref_seq_file: str,
-    chrm: str,
-    peptide_set: set,
-    kmer_length: int = 27,
-    pep_length: int = 999,
-    idx: object = None,
-    countinfo: object = None,
-    edge_idxs: object = None,
-    edge_counts: object = None,
-    seg_counts: object = None,
-    mut_count_id: object = None,
-    junction_list: set = None,
-    kmer_database: set = None,
-    filepointer: object = None,
-    force_ref_peptides: bool = False,
-    graph_output_samples_ids: object = None,
-    graph_samples: object = None,
-    out_dir: str = None,
-    verbose_save: bool = False,
-    fasta_save: bool = False
+        gene: spladder.classes.gene.Gene,
+        mutation: object,
+        table: object,
+        ref_seq_file: str,
+        chrm: str,
+        peptide_set: set,
+        kmer_length: int = 27,
+        pep_length: int = 999,
+        idx: object = None,
+        countinfo: object = None,
+        edge_idxs: object = None,
+        edge_counts: object = None,
+        seg_counts: object = None,
+        mut_count_id: object = None,
+        junction_list: set = None,
+        kmer_database: set = None,
+        filepointer: object = None,
+        force_ref_peptides: bool = False,
+        graph_output_samples_ids: object = None,
+        graph_samples: object = None,
+        out_dir: str = None,
+        verbose_save: bool = False,
+        fasta_save: bool = False
     ) -> None:
     """
     Traverse a splicing graph twice and generate:
@@ -810,7 +813,7 @@ def get_kmers_and_peptides(
     
     # Get peptides for the gene
     get_and_write_peptide(gene, index, cds_starts, ref_mut_seq, segment_to_exons, 
-        mutation, som_exp_dict, peptide_set, pep_length=pep_length,
+        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=100,
         junction_list=junction_list, filepointer=filepointer,
         force_ref_peptides=force_ref_peptides, out_dir=out_dir,
         fasta_save=fasta_save, len_pep_save=5000)
