@@ -96,9 +96,9 @@ def genes_preprocess_all(genes, gene_cds_begin_dict, parallel=1, all_read_frames
         global genes_info
         global cnt
 
-    if os.path.exists('reading_frames.pickle'):
-        genes_info = pickle.load(open('reading_frames.pickle', 'rb'))
-        return genes_info
+    # if os.path.exists('reading_frames.pickle'):
+    #     genes_info = pickle.load(open('reading_frames.pickle', 'rb'))
+    #     return genes_info
 
     if parallel > 1:
         genes_info = np.zeros((genes.shape[0],), dtype=object)
