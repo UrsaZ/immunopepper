@@ -373,9 +373,12 @@ def prepare_output_kmers(gene, idx, countinfo, seg_counts, edge_idxs, edge_count
     # Pre-compute junction expressions for this gene
     junction_cache = precompute_gene_junction_expressions(gene, edge_idxs, edge_counts)
 
+    # Convert set to sorted list with custom key
+    sorted_output_kmers = sorted(output_kmers, key=lambda x: [(seg_id, start, end) for seg_id, start, end in x[0]])
+
     # iterate over all the kmers for the gene
     # output_kmers is a set of tuples (kmer_coord, kmer_peptide, rf_annot, is_isolated)
-    for kmer, kmer_peptide, rf_annot, is_isolated in output_kmers:
+    for kmer, kmer_peptide, rf_annot, is_isolated in sorted_output_kmers:
         k = len(kmer_peptide) #TODO: will always be the same length right or not? can stop shorten it?
 
         # get segment expression per segment per sample
