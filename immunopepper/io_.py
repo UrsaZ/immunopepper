@@ -78,6 +78,7 @@ def get_save_path(file_info: dict, out_dir: str = None,  create_partitions: bool
     :param out_dir: str. any base directory used for the path. Used for creating batches base directories
     :param create_partitions: bool. whether to add an additional path depth and save uniquely identified files
     :param tag: str. tag to add to the partitioned file
+    :param prefix: str. prefix (gene.name) to add to the partitioned file
     :return:
 
     """
@@ -140,23 +141,24 @@ def save_bg_peptide_set(data, filepointer: Filepointer, out_dir: str = None,
 
 
 def save_fg_peptide_set(data: set, filepointer: Filepointer, out_dir: str = None,
-                        save_fasta: bool = False, verbose: bool = False, id_tag: str = ''):
+                        save_fasta: bool = False, verbose: bool = False, id_tag: str = '', gene_name: str = None):
     """
     Save foreground peptide data.
     :param data: set containing the lines to be written sep is '\t'
+    :param gene_name: str, optional, gene name to be used as a prefix for the file
     """
 
     if data:
         data = np.array([line.split('\t') for line in data]).T  # set to array
         if save_fasta:
-            path_fa = get_save_path(filepointer.junction_peptide_fp, out_dir, create_partitions=True, tag=id_tag)
+            path_fa = get_save_path(filepointer.junction_peptide_fp, out_dir, create_partitions=True, tag=id_tag, prefix=gene_name)
             fasta = np.array([make_fasta_ids(data[1]), data[0]])  # id, peptide
             fasta = fasta.flatten(order='F')
             fasta = np.expand_dims(fasta, axis=0).T
             save_to_gzip(path_fa, fasta, filepointer.junction_peptide_fp['columns'], verbose, is_2d=True)
             del fasta
 
-        path = get_save_path(filepointer.junction_meta_fp, out_dir, create_partitions=True, tag=id_tag)
+        path = get_save_path(filepointer.junction_meta_fp, out_dir, create_partitions=True, tag=id_tag, prefix=gene_name)
         save_to_gzip(path, data.T, filepointer.junction_meta_fp['columns'], verbose, is_2d=True)  # Test keep peptide name in the metadata file
 
 

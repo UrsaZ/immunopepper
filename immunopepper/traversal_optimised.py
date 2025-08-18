@@ -600,7 +600,7 @@ def get_and_write_peptide(
                 variant_id += 1
 
                 if len(peptide_set) > len_pep_save: # Save peptide batch to disk when threshold is reached
-                    save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False)
+                    save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
                     peptide_set.clear()
                 
                 if not flag.has_stop:
@@ -676,7 +676,7 @@ def get_and_write_peptide(
                     variant_id += 1
 
                     if len(peptide_set) > len_pep_save: # Save peptide batch to disk when threshold is reached
-                        save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False)
+                        save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
                         peptide_set.clear()
 
                     if not flag.has_stop:  # if no STOP codon, propagate further
@@ -686,7 +686,7 @@ def get_and_write_peptide(
                     queue.append(new_path)  # no stop codon → continue propagating
 
     # Save the last batch of peptides
-    save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False)
+    save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
     return
 
 def get_kmers_and_peptides(
