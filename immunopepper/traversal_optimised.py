@@ -534,7 +534,7 @@ def get_and_write_peptide(
         som_exp_dict: dict,
         peptide_set: set,
         pep_length: int = 1000,
-        pep_step: int = 50,
+        pep_step: int = 30, # step size in amino acids, default 30 aa
         junction_list: set = None,
         filepointer: object = None,
         force_ref_peptides: bool = False,
@@ -542,6 +542,8 @@ def get_and_write_peptide(
         fasta_save: bool = False,
         len_pep_save: int = 5000
     ) -> None:
+
+    pep_step *= 3  # multiply by 3 to get nucleotide step size and to preserve RF
 
     unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set() # store seen k-mers as tuples of (segment_id, start, end)
     queue: deque = deque() # Queue for k-mers to be propagated
@@ -816,7 +818,7 @@ def get_kmers_and_peptides(
     
     # Get peptides for the gene
     get_and_write_peptide(gene, index, cds_starts, ref_mut_seq, segment_to_exons, 
-        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=100,
+        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=30,
         junction_list=junction_list, filepointer=filepointer,
         force_ref_peptides=force_ref_peptides, out_dir=out_dir,
         fasta_save=fasta_save, len_pep_save=5000)
