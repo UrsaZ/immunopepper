@@ -602,9 +602,6 @@ def get_and_write_peptide(
                 if len(peptide_set) > len_pep_save: # Save peptide batch to disk when threshold is reached
                     save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
                     peptide_set.clear()
-                
-                if not flag.has_stop:
-                    has_any_valid_variant = True
 
             # if at least one variant has no STOP, add to queue to propagate
             if has_any_valid_variant:
@@ -614,7 +611,7 @@ def get_and_write_peptide(
     while queue: # While there are k-mers to propagate
         current_path = queue.popleft() # Remove and return a k-mer from the left side
         
-        # Try to advance by step: 3 nt (--> 1 aa)
+        # Try to advance by step nt
         # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
         new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, pep_step)
 
@@ -636,54 +633,54 @@ def get_and_write_peptide(
                 for variant_comb in mut_seq_comb:
                     peptide, flag = get_peptide_result(new_path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
 
-                    # Process and save peptides
-                    if not peptide.mut[0] \
-                                or ((mutation.mode != 'ref') and (peptide.mut[0] in peptide.ref) and (not force_ref_peptides)):
-                            continue
+                    if not flag.has_stop:  # if no STOP codon, propagate further and process the peptide
+                        should_propagate = True
+                    
+                        # Process and save peptides
+                        if not peptide.mut[0] \
+                                    or ((mutation.mode != 'ref') and (peptide.mut[0] in peptide.ref) and (not force_ref_peptides)):
+                                continue
 
-                    # Use kmer path to get an unique kmer ID
-                    kmer_coord_string = f'{path_tuple[0][1]}:' + '-'.join(f'{seg}' for seg, start, end in path_tuple)
-                    new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}"
-                
-                    # Check if the intron defined by vertex_ids is in the user provided list of junctions
-                    is_intron_in_junction_list_flag = is_intron_in_junction_list(gene.splicegraph, path_tuple, gene.strand, junction_list)
+                        # Use kmer path to get an unique kmer ID
+                        kmer_coord_string = f'{path_tuple[0][1]}:' + '-'.join(f'{seg}' for seg, start, end in path_tuple)
+                        new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}"
+                    
+                        # Check if the intron defined by vertex_ids is in the user provided list of junctions
+                        is_intron_in_junction_list_flag = is_intron_in_junction_list(gene.splicegraph, path_tuple, gene.strand, junction_list)
 
-                    # collect expression data for each mutation position
-                    if not (isinstance(variant_comb, float) and np.isnan(variant_comb)) and som_exp_dict is not None:  # which means mutations exist
-                        seg_exp_variant_comb = [int(som_exp_dict[ipos]) for ipos in variant_comb]
-                    else:
-                        seg_exp_variant_comb = np.nan  # if no mutation or no count file,  the segment expression is .
+                        # collect expression data for each mutation position
+                        if not (isinstance(variant_comb, float) and np.isnan(variant_comb)) and som_exp_dict is not None:  # which means mutations exist
+                            seg_exp_variant_comb = [int(som_exp_dict[ipos]) for ipos in variant_comb]
+                        else:
+                            seg_exp_variant_comb = np.nan  # if no mutation or no count file,  the segment expression is .
 
-                    # Add peptide metadata to output
-                    peptide_set.add(namedtuple_to_str(OutputMetadata(peptide=peptide.mut[0],
-                                        output_id=new_output_id,
-                                        read_frame=None,
-                                        read_frame_annotated=None, #TODO: can be added later if needed
-                                        gene_name=gene.name,
-                                        gene_chr=gene.chr,
-                                        gene_strand=gene.strand,
-                                        mutation_mode=mutation.mode,
-                                        has_stop_codon=int(flag.has_stop),
-                                        is_in_junction_list=is_intron_in_junction_list_flag,
-                                        is_isolated=int(flag.is_isolated),
-                                        variant_comb=variant_comb,
-                                        variant_seg_expr=seg_exp_variant_comb,
-                                        modified_exons_coord=':'.join([f'{start}-{end}' for seg_id, start, end in path_tuple]),
-                                        original_exons_coord=None,
-                                        vertex_idx=[seg for seg, _, _ in path_tuple],
-                                        kmer_type=None
-                                        ), sep = '\t'))
-                    variant_id += 1
+                        # Add peptide metadata to output
+                        peptide_set.add(namedtuple_to_str(OutputMetadata(peptide=peptide.mut[0],
+                                            output_id=new_output_id,
+                                            read_frame=None,
+                                            read_frame_annotated=None, #TODO: can be added later if needed
+                                            gene_name=gene.name,
+                                            gene_chr=gene.chr,
+                                            gene_strand=gene.strand,
+                                            mutation_mode=mutation.mode,
+                                            has_stop_codon=int(flag.has_stop),
+                                            is_in_junction_list=is_intron_in_junction_list_flag,
+                                            is_isolated=int(flag.is_isolated),
+                                            variant_comb=variant_comb,
+                                            variant_seg_expr=seg_exp_variant_comb,
+                                            modified_exons_coord=':'.join([f'{start}-{end}' for seg_id, start, end in path_tuple]),
+                                            original_exons_coord=None,
+                                            vertex_idx=[seg for seg, _, _ in path_tuple],
+                                            kmer_type=None
+                                            ), sep = '\t'))
+                        variant_id += 1
 
                     if len(peptide_set) > len_pep_save: # Save peptide batch to disk when threshold is reached
                         save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
                         peptide_set.clear()
 
-                    if not flag.has_stop:  # if no STOP codon, propagate further
-                        should_propagate = True
-
-                if should_propagate: # if at least one of the mutated sequences has no STOP codon
-                    queue.append(new_path)  # no stop codon → continue propagating
+                if should_propagate: # if at least one of the mutated sequences has no STOP codon propagate the path
+                    queue.append(new_path)
 
     # Save the last batch of peptides
     save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
