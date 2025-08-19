@@ -207,6 +207,33 @@ def build_initial_kmers(cds_starts: List[int],
 
     return results
 
+def _consume_from_head(path, seg_ids, nt, strand):
+    """
+    Consume `nt` nucleotides from the head of `path`, possibly across multiple segments.
+    Returns (new_path, new_seg_ids). If everything is consumed, returns ([], []).
+    """
+    if nt <= 0:  # Safety check
+        return path[:], seg_ids[:]
+        
+    i = 0
+    while nt > 0 and i < len(path):
+        seg_id, s, e = path[i]
+        seg_len = e - s
+        if seg_len > nt:
+            # trim inside this segment and keep the rest
+            if strand == '+': # advance start of first segment
+                new_head = (seg_id, s + nt, e)
+            else:
+                # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting step from the last el.
+                new_head = (seg_id, s, e - nt)
+            return [new_head] + path[i+1:], seg_ids[i:]
+        else:
+            # drop this whole segment and keep consuming
+            nt -= seg_len
+            i += 1
+    # consumed all segments
+    return [], []
+
 def propagate_kmer(kmer: List[Tuple[int, int, int]],
                    segment_coords: np.ndarray,
                    strand: str,
@@ -235,36 +262,13 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
     # Extract the segment path (list of segment IDs order)
     seg_path = [seg_id for seg_id, _, _ in kmer]
 
-    # ----------- Step 1: Trim 3 nt (step) from the front -----------
-    head_seg_id, head_start, head_end = kmer[0]
-    head_len = head_end - head_start
+    # ----------- Step 1: Trim step nt from the front -----------
+    trimmed_kmer, new_seg_path = _consume_from_head(kmer, seg_path, step, strand)
 
-    if head_len > step:
-        # Just advance start of first segment
-        if strand == '+':
-            new_head = (head_seg_id, head_start + step, head_end)
-        else: 
-            # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 (step) from the last el.
-            new_head = (head_seg_id, head_start, head_end - step)
-        trimmed_kmer = [new_head] + kmer[1:] # update the 1st segment
-        new_seg_path = seg_path
-    else:
-        # Remove the first segment completely and subtract remaining from next
-        trimmed_kmer = kmer[1:]
-        new_seg_path = seg_path[1:] # remove 1st segment ID from the path
-        if not trimmed_kmer:
-            return []  # Nothing left after trimming
-
-        # Adjust the new head segment by 3 (step) - head_len nt
-        next_seg_id, next_start, next_end = trimmed_kmer[0]
-        advance = step - head_len # how much is left after subtracting from the 1st segment
-        if strand == '+':
-            new_head = (next_seg_id, next_start + advance, next_end)
-        else:
-            new_head = (next_seg_id, next_start, next_end - advance)
-
-        trimmed_kmer[0] = new_head
-        
+    # If we consumed everything, return empty (no more propagation possible)
+    if not trimmed_kmer:
+        return []
+    
     # ----------- Step 2: Extend 3 nt (step) at the back -----------
     tail_seg_id, tail_start, tail_end = trimmed_kmer[-1]
     seg_start, seg_end = segment_coords[:, tail_seg_id]
