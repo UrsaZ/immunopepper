@@ -113,7 +113,8 @@ def build_initial_kmers(cds_starts: List[int],
                         k: int,
                         segment_coords: np.ndarray,
                         strand: str,
-                        index: SegmentPathIndex) -> List[List[Tuple[int, int, int]]]:
+                        index: SegmentPathIndex,
+                        output_type: str = 'kmer') -> List[List[Tuple[int, int, int]]]:
     """
     Build all valid k-mer paths (e.g., 27-mers) starting from CDS start positions.
 
@@ -123,6 +124,7 @@ def build_initial_kmers(cds_starts: List[int],
         segment_coords: 2xN array of genomic start and end positions per segment (gene.segmentgraph.segments).
         strand: '+' or '-' indicating gene orientation.
         index: A SegmentPathIndex used to validate segment paths.
+        output_type: 'kmer' or 'peptide' - determines behavior at sequence boundaries
 
     Returns:
         List of k-mer paths. Each path is a list of (segment_id, genomic_start, genomic_end) tuples.
@@ -184,6 +186,15 @@ def build_initial_kmers(cds_starts: List[int],
 
         # Propagate to all valid children in the index
         next_seg_ids = index.children(seg_path)
+        if not next_seg_ids:
+            # Hit a boundary - for peptides, save what we have
+            if output_type == 'peptide':
+                path_tuple = tuple(new_path)
+                if path_tuple not in seen:
+                    results.append(new_path)
+                    seen.add(path_tuple)
+            return
+        
         for next_id in next_seg_ids:
             next_seg_path = seg_path + [next_id]
             dfs(next_id, 0, remaining, new_path, next_seg_path)
@@ -200,7 +211,8 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                    segment_coords: np.ndarray,
                    strand: str,
                    index: SegmentPathIndex,
-                   step: int = 3) -> List[List[Tuple[int, int, int]]]:
+                   step: int = 3,
+                   output_type: str = 'kmer') -> List[List[Tuple[int, int, int]]]:
     """
     Propagate a k-mer (always 27nt) forward by step (def. 3 nt), respecting strand and valid segment paths.
     
@@ -213,6 +225,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         strand: '+' or '-' indicating direction
         index: A SegmentPathIndex with valid segment continuations
         step: number of nucleotides by which to propagate a kmer in each step (default 3)
+        output_type: 'kmer' or 'peptide' - determines behavior at sequence boundaries
 
     Returns:
         A list of new propagated k-mers (as lists of (segment_id, start, end))
@@ -231,7 +244,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
         if strand == '+':
             new_head = (head_seg_id, head_start + step, head_end)
         else: 
-        # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 (step) from the last el.
+            # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 (step) from the last el.
             new_head = (head_seg_id, head_start, head_end - step)
         trimmed_kmer = [new_head] + kmer[1:] # update the 1st segment
         new_seg_path = seg_path
@@ -269,21 +282,32 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                 tail_piece = (tail_seg_id, tail_start, tail_end + remaining)
                 base_path = trimmed_kmer[:-1] + [tail_piece]
 
-            def extend_forward(path, seg_ids, remaining_nt):
-                children = index.children(seg_ids) # get a list of all the segments directly after the current kmer path #TODO: test
-                for child_id in children: # propagate into all possible next segments
-                    child_start, child_end = segment_coords[:, child_id]
-                    child_len = child_end - child_start
-                    take = min(child_len, remaining_nt) # take as much as possible from the next segment
-                    next_piece = (child_id, child_start, child_start + take)
-                    new_path = path + [next_piece] # list of kmers
-                    new_seg_ids = seg_ids + [child_id] # list of seg ids
-                    if take == remaining_nt: # next segment had enough nt, propagation done
-                        new_paths.append(new_path)
-                    elif child_len >= 1: # not done yet, extend in the next-next segment
-                        extend_forward(new_path, new_seg_ids, remaining_nt - take)
+            if to_fill > 0:
+                def extend_forward(path, seg_ids, remaining_nt):
+                    children = index.children(seg_ids) # get a list of all the segments directly after the current kmer path #TODO: test    
+                    if not children:
+                        # save incomplete peptides, but not kmers
+                        if output_type == 'peptide':
+                            new_paths.append(path)
+                        return
 
-            extend_forward(base_path, new_seg_path, to_fill)
+                    for child_id in children: # propagate into all possible next segments
+                        child_start, child_end = segment_coords[:, child_id]
+                        child_len = child_end - child_start
+                        take = min(child_len, remaining_nt) # take as much as possible from the next segment
+                        next_piece = (child_id, child_start, child_start + take)
+                        new_path = path + [next_piece] # list of kmers
+                        new_seg_ids = seg_ids + [child_id] # list of seg ids
+
+                        if take == remaining_nt: # next segment had enough nt, propagation done
+                            new_paths.append(new_path)
+                        else: # take < remaining_nt, need to continue
+                            extend_forward(new_path, new_seg_ids, remaining_nt - take)
+
+                extend_forward(base_path, new_seg_path, to_fill)
+            else:
+                # No need to extend, just save the current path
+                new_paths.append(base_path)
 
     else:  
         # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting 3 (step) from the 2nd el.
@@ -300,7 +324,12 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                 base_path = trimmed_kmer[:-1] + [tail_piece]
 
             def extend_reverse(path, seg_ids, remaining_nt):
-                children = index.children(seg_ids) # get a list of all the segments directly after the current one #TODO: test
+                children = index.children(seg_ids) # get a list of all the segments directly after the current one
+                if not children:
+                    if output_type == 'peptide':
+                        new_paths.append(path)
+                    return                
+
                 for child_id in children: # propagate into all possible next segments
                     child_start, child_end = segment_coords[:, child_id]
                     child_len = child_end - child_start # ok, coordinates in the ascending order in the matrix
@@ -310,7 +339,7 @@ def propagate_kmer(kmer: List[Tuple[int, int, int]],
                     new_seg_ids = seg_ids + [child_id] # list of seg_ids
                     if take == remaining_nt: # next segment had enough nt, propagation done
                         new_paths.append(new_path)
-                    elif child_len >= 1: # not done yet, extend in the next-next segment
+                    else: # take < remaining_nt, need to continue
                         extend_reverse(new_path, new_seg_ids, remaining_nt - take)
 
             extend_reverse(base_path, new_seg_path, to_fill)
@@ -454,7 +483,7 @@ def get_and_write_kmer(
     queue: deque = deque() # Queue for k-mers to be propagated
 
     # Initialize 27-mers from CDS start positions
-    init_paths = build_initial_kmers(cds_starts, kmer_length, gene.segmentgraph.segments, gene.strand, index)
+    init_paths = build_initial_kmers(cds_starts, kmer_length, gene.segmentgraph.segments, gene.strand, index, output_type='kmer')
 
     # iterate over initial kmers, get sequence, translate and check for STOP codons
     for path in init_paths:
@@ -487,7 +516,7 @@ def get_and_write_kmer(
         
         # Try to advance by step: 3 nt (--> 1 aa) 
         # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, step=3)
+        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, step=3, output_type='kmer')
 
         # iterate over all possible next kmers
         for new_path in new_paths:
@@ -549,8 +578,7 @@ def get_and_write_peptide(
     queue: deque = deque() # Queue for k-mers to be propagated
 
     # Initialize 27-mers from CDS start positions
-    init_paths = build_initial_kmers(cds_starts, pep_length, gene.segmentgraph.segments, gene.strand, index)
-
+    init_paths = build_initial_kmers(cds_starts, pep_length, gene.segmentgraph.segments, gene.strand, index, output_type='peptide')
     # iterate over initial kmers, get sequence, translate and check for STOP codons
     for path in init_paths:
         path_tuple = tuple(path)
@@ -564,7 +592,6 @@ def get_and_write_peptide(
             variant_id = 0
             for variant_comb in mut_seq_comb:
                 peptide, flag = get_peptide_result(path, gene.strand, variant_comb, mutation.somatic_dict, ref_mut_seq, gene.start, segment_to_exons)
-
                 # Process and save peptides
                 if not peptide.mut[0] \
                             or ((mutation.mode != 'ref') and (peptide.mut[0] in peptide.ref) and (not force_ref_peptides)):
@@ -621,8 +648,7 @@ def get_and_write_peptide(
         
         # Try to advance by step: 3 nt (--> 1 aa)
         # new_paths is a list of kmers which is a lists of tuples (segment_id, start, end)
-        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, pep_step)
-
+        new_paths = propagate_kmer(current_path, gene.segmentgraph.segments, gene.strand, index, pep_step, output_type='peptide')
         # iterate over all possible next kmers
         for new_path in new_paths:
             path_tuple = tuple(new_path)
