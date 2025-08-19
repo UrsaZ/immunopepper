@@ -214,25 +214,40 @@ def _consume_from_head(path, seg_ids, nt, strand):
     """
     if nt <= 0:  # Safety check
         return path[:], seg_ids[:]
-        
-    i = 0
-    while nt > 0 and i < len(path):
-        seg_id, s, e = path[i]
-        seg_len = e - s
-        if seg_len > nt:
-            # trim inside this segment and keep the rest
-            if strand == '+': # advance start of first segment
-                new_head = (seg_id, s + nt, e)
-            else:
-                # '-' strand, segment tuples look like: (3, 4900, 4980) so we want to be subtracting step from the last el.
-                new_head = (seg_id, s, e - nt)
-            return [new_head] + path[i+1:], seg_ids[i:]
+    
+    if not path:  # Empty path
+        return [], []
+    
+    # Case 1: Check if first segment has enough nucleotides
+    first_seg_id, first_start, first_end = path[0]
+    first_seg_len = first_end - first_start
+    
+    if first_seg_len > nt:
+        # Case 1: Just advance start of first segment
+        if strand == '+':
+            new_head = (first_seg_id, first_start + nt, first_end)
         else:
-            # drop this whole segment and keep consuming
-            nt -= seg_len
-            i += 1
-    # consumed all segments
-    return [], []
+            # '-' strand: subtract from end coordinate
+            new_head = (first_seg_id, first_start, first_end - nt)
+        return [new_head] + path[1:], seg_ids
+    
+    elif first_seg_len == nt:
+        # Exactly consume the first segment, return rest
+        return path[1:], seg_ids[1:]
+    
+    else:
+        # Case 2: first_seg_len < nt - need to remove first segment and continue
+        remaining_nt = nt - first_seg_len
+        remaining_path = path[1:]
+        remaining_seg_ids = seg_ids[1:]
+        
+        if not remaining_path:
+            # Nothing left after removing first segment
+            return [], []
+        
+        # Recursively consume from the remaining path
+        new_path, new_seg_ids = _consume_from_head(remaining_path, remaining_seg_ids, remaining_nt, strand)
+        return new_path, new_seg_ids
 
 def propagate_kmer(kmer: List[Tuple[int, int, int]],
                    segment_coords: np.ndarray,
