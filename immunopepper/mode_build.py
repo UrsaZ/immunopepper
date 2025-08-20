@@ -2,6 +2,7 @@
 """"""
 # Core operation of ImmunoPepper. Traverse splicegraph and get kmer/peptide output
 
+import glob
 import h5py
 import logging
 from multiprocessing.pool import Pool
@@ -19,6 +20,7 @@ from immunopepper.io_ import initialize_fp
 from immunopepper.io_ import save_bg_kmer_set
 from immunopepper.io_ import save_bg_peptide_set
 from immunopepper.io_ import save_gene_expr_distr
+from immunopepper.io_ import collect_results, remove_folder_list
 
 from immunopepper.mutations import get_sub_mutations
 from immunopepper.mutations import load_mutations
@@ -297,6 +299,244 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
 
     return 'multiprocessing is success'
 
+def merge_parallel_results(output_path, mutation_mode, filepointer, arg):
+    """Merge/reorganize parallel batch results to match non-parallel structure"""
+    import glob
+    import pandas as pd
+    import os
+    import shutil
+    import gzip
+    
+    logging.info(">>>>>>>>> Merging parallel results")
+    
+    # Find all batch directories
+    batch_dirs = glob.glob(os.path.join(output_path, f'tmp_out_{mutation_mode}_batch_*'))
+    
+    if not batch_dirs:
+        logging.error("No batch directories found")
+        return
+    
+    logging.info(f"Found {len(batch_dirs)} batch directories")
+    
+    # 1. Merge gene_expression_detail files and sort by gene column
+    if countinfo:
+        logging.info("Merging and sorting gene_expression_detail")
+        gene_expr_files = []
+        for batch_dir in batch_dirs:
+            gene_expr_file = os.path.join(batch_dir, 'gene_expression_detail.gz')
+            if os.path.isfile(gene_expr_file):
+                gene_expr_files.append(gene_expr_file)
+        
+        if gene_expr_files:
+            dfs = []
+            for file_path in gene_expr_files:
+                try:
+                    df = pd.read_csv(file_path, sep='\t', compression='gzip')
+                    if not df.empty:
+                        dfs.append(df)
+                except Exception as e:
+                    logging.warning(f"Failed to read {file_path}: {e}")
+            
+            if dfs:
+                merged_df = pd.concat(dfs, ignore_index=True)
+                merged_df = merged_df.sort_values(by=merged_df.columns[0], key=lambda x: pd.Categorical(x, categories=sorted(x.unique(), key=lambda s: int(s.replace('gene', '')))))
+                
+                final_path = os.path.join(output_path, 'gene_expression_detail')
+                merged_df.to_csv(final_path, sep='\t', index=False)
+                logging.info(f"Merged and sorted {len(merged_df)} gene expression records")
+    
+    # 2. Merge annotation files - FIXED: Added .gz extensions
+    annotation_files = [
+        f'{mutation_mode}_annot_kmer.gz',
+        f'{mutation_mode}_annot_peptides.fa.gz'
+    ]
+    
+    for filename in annotation_files:
+        logging.info(f"Merging {filename}")
+        all_files = []
+        
+        for batch_dir in batch_dirs:
+            file_path = os.path.join(batch_dir, filename)
+            if os.path.isfile(file_path):
+                # Check if file has content
+                try:
+                    file_size = os.path.getsize(file_path)
+                    if file_size > 0:
+                        all_files.append(file_path)
+                        logging.debug(f"Found non-empty file: {file_path} (size: {file_size} bytes)")
+                    else:
+                        logging.debug(f"Found empty file: {file_path}")
+                except Exception as e:
+                    logging.warning(f"Error checking file size for {file_path}: {e}")
+        
+        logging.info(f"Found {len(all_files)} non-empty files for {filename}")
+        
+        if all_files:
+            # Remove .gz from final filename
+            final_filename = filename.replace('.gz', '')
+            final_path = os.path.join(output_path, final_filename)
+            
+            if filename.endswith('.fa.gz'):
+                # Merge FASTA files - FIXED: Handle "fasta" header properly
+                all_sequences = []
+                for fasta_file in all_files:
+                    try:
+                        with gzip.open(fasta_file, 'rt') as f:
+                            content = f.read().strip()
+                            if content:
+                                lines = content.split('\n')
+                                # Skip the first line if it's just "fasta" header
+                                start_idx = 1 if lines and lines[0].strip() == 'fasta' else 0
+                                # Get all lines after the header (sequence IDs and sequences)
+                                sequences = [line.strip() for line in lines[start_idx:] if line.strip()]
+                                all_sequences.extend(sequences)
+                                logging.debug(f"Read {len(sequences)} sequence lines from {fasta_file}")
+                    except Exception as e:
+                        logging.warning(f"Failed to read FASTA file {fasta_file}: {e}")
+                
+                if all_sequences:
+                    with open(final_path, 'w') as f:
+                        f.write("fasta\n")  # Write single header
+                        f.write('\n'.join(all_sequences))  # Write all sequences
+                    logging.info(f"Merged {len(all_sequences)} FASTA lines to {final_filename}")
+                else:
+                    logging.warning(f"No FASTA sequences found for {filename}")
+                    # Create empty file with just header
+                    with open(final_path, 'w') as f:
+                        f.write("fasta\n")
+                    
+            else:
+                # Handle annot_kmer files specially - they have header + single line with tab-separated kmers
+                if filename.endswith('_annot_kmer.gz'):
+                    all_kmers = set()  # Use set to avoid duplicates
+                    
+                    for data_file in all_files:
+                        try:
+                            with gzip.open(data_file, 'rt') as f:
+                                lines = f.read().strip().split('\n')
+                                if len(lines) >= 2:  # Header + data line
+                                    data_line = lines[1]  # Second line contains the kmers
+                                    kmers = data_line.split('\t')
+                                    all_kmers.update(kmer.strip() for kmer in kmers if kmer.strip())
+                                    logging.debug(f"Read {len(kmers)} kmers from {data_file}")
+                        except Exception as e:
+                            logging.warning(f"Failed to read annot_kmer file {data_file}: {e}")
+                    
+                    if all_kmers:
+                        # Write merged kmers in the same format: header + tab-separated line
+                        with open(final_path, 'w') as f:
+                            f.write("kmer\n")
+                            f.write("\t".join(sorted(all_kmers)))
+                        logging.info(f"Merged {len(all_kmers)} unique kmers to {final_filename}")
+                    else:
+                        logging.warning(f"No valid kmers found for {filename}")
+                        # Create empty file with just header
+                        with open(final_path, 'w') as f:
+                            f.write("kmer\n")
+                else:
+                    # Handle other TSV files normally
+                    dfs = []
+                    for data_file in all_files:
+                        try:
+                            df = pd.read_csv(data_file, sep='\t', compression='gzip')
+                            if not df.empty:
+                                dfs.append(df)
+                                logging.debug(f"Read {len(df)} records from {data_file}")
+                        except Exception as e:
+                            logging.warning(f"Failed to read {data_file}: {e}")
+                    
+                    if dfs:
+                        merged_df = pd.concat(dfs, ignore_index=True)
+                        merged_df.to_csv(final_path, sep='\t', index=False)
+                        logging.info(f"Merged {len(merged_df)} records to {final_filename}")
+                    else:
+                        logging.warning(f"No valid data found for {filename}")
+                        # Create empty file
+                        pd.DataFrame().to_csv(final_path, sep='\t', index=False)
+            
+        else:
+            logging.warning(f"No non-empty files found for {filename} - creating empty file")
+            final_filename = filename.replace('.gz', '')
+            final_path = os.path.join(output_path, final_filename)
+            if filename.endswith('.fa.gz'):
+                # Create empty FASTA
+                with open(final_path, 'w') as f:
+                    pass
+            else:
+                # Create empty TSV
+                pd.DataFrame().to_csv(final_path, sep='\t', index=False)
+    
+    # 3. Move partitioned directories (don't merge, just consolidate into single directories)
+    partitioned_dirs = [
+        f'{mutation_mode}_graph_kmer_JuncExpr',
+        f'{mutation_mode}_graph_kmer_SegmExpr', 
+        f'{mutation_mode}_sample_peptides_meta',
+        f'{mutation_mode}_sample_peptides.fa'
+    ]
+    
+    for dirname in partitioned_dirs:
+        # Skip FASTA directory if not needed
+        if dirname.endswith('.fa') and not arg.output_fasta:
+            continue
+            
+        logging.info(f"Consolidating {dirname}")
+        final_dir = os.path.join(output_path, dirname)
+        os.makedirs(final_dir, exist_ok=True)
+        
+        # Collect all part files from all batch directories
+        part_count = 0
+        for batch_dir in batch_dirs:
+            source_dir = os.path.join(batch_dir, dirname)
+            if os.path.isdir(source_dir):
+                # Move all part files from this batch directory (including .gz files)
+                part_files = glob.glob(os.path.join(source_dir, 'part-*'))
+                for part_file in part_files:
+                    dest_file = os.path.join(final_dir, os.path.basename(part_file))
+                    # Rename if file already exists (shouldn't happen but just in case)
+                    counter = 1
+                    while os.path.exists(dest_file):
+                        name, ext = os.path.splitext(os.path.basename(part_file))
+                        if ext == '.gz':
+                            name_base, ext_base = os.path.splitext(name)
+                            dest_file = os.path.join(final_dir, f"{name_base}_{counter}{ext_base}.gz")
+                        else:
+                            dest_file = os.path.join(final_dir, f"{name}_{counter}{ext}")
+                        counter += 1
+                    
+                    shutil.move(part_file, dest_file)
+                    part_count += 1
+        
+        if part_count > 0:
+            logging.info(f"Moved {part_count} part files to {dirname}")
+        else:
+            logging.warning(f"No part files found for {dirname}")
+    
+    # 4. Copy success flags
+    success_flags = ['output_sample_IS_SUCCESS', 'Annot_IS_SUCCESS']
+    
+    for flag_name in success_flags:
+        # Find the flag in any batch directory and copy it to main output
+        for batch_dir in batch_dirs:
+            flag_path = os.path.join(batch_dir, flag_name)
+            if os.path.exists(flag_path):
+                final_flag_path = os.path.join(output_path, flag_name)
+                if os.path.isfile(flag_path):
+                    shutil.copy2(flag_path, final_flag_path)
+                else:
+                    # It's a directory or other type, just create empty file
+                    open(final_flag_path, 'a').close()
+                logging.info(f"Copied {flag_name} flag")
+                break
+    
+    # Clean up batch directories
+    logging.info("Cleaning up batch directories")
+    for batch_dir in batch_dirs:
+        try:
+            shutil.rmtree(batch_dir)
+        except Exception as e:
+            logging.error(f"Failed to remove {batch_dir}: {e}")
+    
+    logging.info(">>>>>>>>> Parallel merging completed")
 
 def mode_build(arg):
     global output_sample
@@ -428,6 +668,8 @@ def mode_build(arg):
                 exits_if_exception = [res for res in result]
 
             logging.info("Finished traversal")
+                
+
 
         else:
             logging.info('Not Parallel')
@@ -448,3 +690,10 @@ def mode_build(arg):
         if (not disable_process_libsize) and countinfo:
             output_libsize_fp = os.path.join(arg.output_dir, 'expression_counts.libsize.tsv')
             create_libsize(filepointer.gene_expr_fp, output_libsize_fp, output_path, mutation.mode, arg.parallel)
+
+        if arg.parallel > 1:
+            try:
+                merge_parallel_results(output_path, mutation.mode, filepointer, arg)
+            except Exception as e:
+                logging.error(f"Failed to merge parallel results: {e}")
+                raise
