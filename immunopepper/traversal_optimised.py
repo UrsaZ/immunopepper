@@ -581,8 +581,8 @@ def get_and_write_peptide(
         mutation: object,
         som_exp_dict: dict,
         peptide_set: set,
-        pep_length: int = 300, # length of peptide to generate, default 300 aa
-        pep_step: int = 30, # step size in amino acids, default 30 aa
+        pep_length: int, # length of peptide to generate in amino acids
+        pep_step: int, # step size in amino acids
         junction_list: set = None,
         filepointer: object = None,
         force_ref_peptides: bool = False,
@@ -738,6 +738,7 @@ def get_and_write_peptide(
 
     # Save the last batch of peptides
     save_fg_peptide_set(peptide_set, filepointer, out_dir, fasta_save, verbose=False, gene_name=gene.name)
+    peptide_set.clear()
     return
 
 def get_kmers_and_peptides(
