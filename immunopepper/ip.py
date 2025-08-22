@@ -51,6 +51,8 @@ def get_build_parser(parser):
     required.add_argument("--kmer", type=int, help="length of the kmers for kmer output.", required=True, default=9)
 
     submodes = parser.add_argument_group('Submodes parameters', 'Commands for conceptual information about the processing.')
+    submodes.add_argument("--pep-length", type=int, help="length of the peptides for peptide output.", required=False, default=100)
+    submodes.add_argument("--pep-step", type=int, help="step size for the peptides. It defines the overlap between two consecutive peptides. For example, if --pep-length is 27 and --pep-step is 9, the peptides will overlap by 18 aminoacids.", required=False, default=30)
     submodes.add_argument("--libsize-extract",help="This option generates library sizes and gene quantifications and skip neontigen generation.",action="store_true", required=False, default=False)
     submodes.add_argument("--all-read-frames", help="This option enables the exhaustive translation and to study all possible reading frames instead of just the ones present in the annotation file.", action="store_true", required=False, default=False)
     submodes.add_argument("--count-path", help="Absolute path for the second output of `SplAdder <https://github.com/ratschlab/spladder>`_ containing the graph expression quantification. If provided, expression quantification of genes will take place. **Format:** hdf5.", required=False, default=None)

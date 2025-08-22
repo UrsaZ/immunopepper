@@ -749,7 +749,8 @@ def get_kmers_and_peptides(
         chrm: str,
         peptide_set: set,
         kmer_length: int = 27,
-        pep_length: int = 300,
+        pep_length: int = 100,
+        pep_step: int = 30,
         idx: object = None,
         countinfo: object = None,
         edge_idxs: object = None,
@@ -865,7 +866,7 @@ def get_kmers_and_peptides(
     
     # Get peptides for the gene
     get_and_write_peptide(gene, index, cds_starts, ref_mut_seq, segment_to_exons, 
-        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=1,
+        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=pep_step,
         junction_list=junction_list, filepointer=filepointer,
         force_ref_peptides=force_ref_peptides, out_dir=out_dir,
         fasta_save=fasta_save, len_pep_save=5000)
