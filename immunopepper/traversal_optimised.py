@@ -581,7 +581,7 @@ def get_and_write_peptide(
         mutation: object,
         som_exp_dict: dict,
         peptide_set: set,
-        pep_length: int = 1000,
+        pep_length: int = 300, # length of peptide to generate, default 300 aa
         pep_step: int = 30, # step size in amino acids, default 30 aa
         junction_list: set = None,
         filepointer: object = None,
@@ -592,6 +592,7 @@ def get_and_write_peptide(
     ) -> None:
 
     pep_step *= 3  # multiply by 3 to get nucleotide step size and to preserve RF
+    pep_length *= 3  # multiply by 3 to get nucleotide length
 
     unique_kmers: Set[Tuple[Tuple[int, int, int], ...]] = set() # store seen k-mers as tuples of (segment_id, start, end)
     queue: deque = deque() # Queue for k-mers to be propagated
@@ -747,7 +748,7 @@ def get_kmers_and_peptides(
         chrm: str,
         peptide_set: set,
         kmer_length: int = 27,
-        pep_length: int = 999,
+        pep_length: int = 300,
         idx: object = None,
         countinfo: object = None,
         edge_idxs: object = None,
@@ -784,9 +785,9 @@ def get_kmers_and_peptides(
     chrm : str
         Chromosome name for sequence extraction
     kmer_length : int
-        Length of k-mers to generate (nucleotides)
+        Length of k-mers to generate (in nt)
     pep_length : int
-        Maximum length of peptides to generate (nucleotides)
+        Maximum length of peptides to generate (in aa)
     peptide_set : set
         Set to accumulate peptide metadata for batch saving
     idx : object, optional
@@ -863,7 +864,7 @@ def get_kmers_and_peptides(
     
     # Get peptides for the gene
     get_and_write_peptide(gene, index, cds_starts, ref_mut_seq, segment_to_exons, 
-        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=30,
+        mutation, som_exp_dict, peptide_set, pep_length=pep_length, pep_step=1,
         junction_list=junction_list, filepointer=filepointer,
         force_ref_peptides=force_ref_peptides, out_dir=out_dir,
         fasta_save=fasta_save, len_pep_save=5000)
