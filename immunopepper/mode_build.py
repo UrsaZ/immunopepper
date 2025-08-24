@@ -658,7 +658,13 @@ def mode_build(arg): # main, handles setup, loading, and dispatc
                          os.path.join(output_path, f'tmp_out_{mutation.mode}_batch_{i + arg.start_id}'),
                          filepointer, verbose_save) for i, gene_idx in gene_batches]
                 result = pool.imap(mapper_funct, args, chunksize=1)
-                exits_if_exception = [res for res in result]
+                # Force execution and catch exceptions from worker processes
+                try:
+                    for res in result:
+                        pass
+                except Exception as e:
+                    logging.error(f"Worker process failed: {e}")
+                    raise
 
             logging.info("Finished traversal")
 
