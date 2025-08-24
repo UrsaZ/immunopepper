@@ -572,6 +572,33 @@ def get_and_write_kmer(
                             graph_samples, filepointer, out_dir, verbose=verbose_save)
     return
 
+def truncate_path_at_stop(path_tuple: Tuple, peptide_seq: str, strand: str) -> Tuple:
+    """Truncate path coordinates to match the actual translated peptide length"""
+    if not peptide_seq:
+        return path_tuple
+        
+    translated_nt = len(peptide_seq) * 3
+    truncated_path = []
+    consumed_nt = 0
+    
+    for seg_id, start, end in path_tuple:
+        seg_len = end - start
+        
+        if consumed_nt + seg_len <= translated_nt:
+            # Take the whole segment
+            truncated_path.append((seg_id, start, end))
+            consumed_nt += seg_len
+        else:
+            # Take partial segment up to stop codon
+            remaining = translated_nt - consumed_nt
+            if strand == '+':
+                truncated_path.append((seg_id, start, start + remaining))
+            else:
+                truncated_path.append((seg_id, end - remaining, end))
+            break
+            
+    return tuple(truncated_path)   
+
 def get_and_write_peptide(
         gene: spladder.classes.gene.Gene,
         index: SegmentPathIndex,
@@ -616,9 +643,11 @@ def get_and_write_peptide(
                 if not peptide.mut[0] \
                             or ((mutation.mode != 'ref') and (peptide.mut[0] in peptide.ref) and (not force_ref_peptides)):
                         continue
+                
+                truncated_coords = truncate_path_at_stop(path_tuple, peptide.mut[0], gene.strand)
 
                 # Use kmer path to get an unique kmer ID
-                kmer_coord_string = f'{path_tuple[0][1]}:' + '-'.join(f'{seg}' for seg, start, end in path_tuple)
+                kmer_coord_string = f'{truncated_coords[0][1]}:' + '-'.join(f'{seg}' for seg, start, end in truncated_coords)
                 new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}"
                
                 # Check if the intron defined by vertex_ids is in the user provided list of junctions
@@ -691,9 +720,11 @@ def get_and_write_peptide(
                     if not peptide.mut[0] \
                                 or ((mutation.mode != 'ref') and (peptide.mut[0] in peptide.ref) and (not force_ref_peptides)):
                             continue
+                    
+                    truncated_coords = truncate_path_at_stop(path_tuple, peptide.mut[0], gene.strand)
 
                     # Use kmer path to get an unique kmer ID
-                    kmer_coord_string = f'{path_tuple[0][1]}:' + '-'.join(f'{seg}' for seg, start, end in path_tuple)
+                    kmer_coord_string = f'{truncated_coords[0][1]}:' + '-'.join(f'{seg}' for seg, start, end in truncated_coords)
                     new_output_id = f"{gene.name}_{kmer_coord_string}_{variant_id}"
                 
                     # Check if the intron defined by vertex_ids is in the user provided list of junctions
