@@ -14,6 +14,7 @@ from immunopepper.mutations import get_mut_comb, get_mutated_sequence, mutation_
 from immunopepper.io_ import save_fg_peptide_set, namedtuple_to_str, save_kmer_matrix
 from immunopepper.utils import replace_I_with_L, get_segment_expr_kmer
 from immunopepper.preprocess import search_edge_metadata_segmentgraph, precompute_gene_junction_expressions
+from immunopepper.temp_not_used_functions import SegmentPathTrie, build_segment_trie
 
 
 # A defaultdict to hold all valid segment paths derived from real transcripts
@@ -889,6 +890,7 @@ def get_kmers_and_peptides(
 
     # Build an index of valid continuations from each segment
     index = build_segment_index(gene, exon_to_segments)
+    #index = build_segment_trie(gene)
 
     # Get kmers for the gene
     get_and_write_kmer(gene, index, cds_starts, ref_mut_seq, segment_to_exons, gene_annot_jx, 
