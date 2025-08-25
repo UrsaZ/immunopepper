@@ -266,7 +266,7 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
 
             # Do not process genes with highly complex splice graphs
             if len(gene.splicegraph.vertices[1]) > complexity_cap:
-                logging.warning(f'> Gene {gene.name} has a edge complexity > {complexity_cap}, not processed')
+                logging.warning(f'> Gene {gene.name} has a edge complexity > {complexity_cap}, not processed. No of exons: {len(gene.splicegraph.vertices[1])}')
                 continue
 
             chrm = gene.chr.strip()
@@ -296,7 +296,7 @@ def process_gene_batch_foreground(output_sample, mutation_sample, output_samples
                                     ref_seq_file=arg.ref_path,
                                     chrm=chrm,
                                     peptide_set=set_pept_forgrd,
-                                    kmer_length=arg.kmer,
+                                    kmer_length=arg.kmer*3, #convert to nt
                                     pep_length=arg.pep_length,
                                     pep_step=arg.pep_step,
                                     idx=idx,
